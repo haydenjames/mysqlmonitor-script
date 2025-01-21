@@ -17,7 +17,9 @@ chmod +x mysqlmonitor.sh
 ```
 
 ### Step 3: Run the script
-`./mysqlmonitor.sh`
+```bash
+./mysqlmonitor.sh
+```
 
 Done! 
 
