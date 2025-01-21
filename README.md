@@ -14,4 +14,5 @@ This is a lightweight bash script designed to provide sysadmins and DBAs with a 
 ### Step 3: Run the script
 `./mysqlmonitor.sh`
 
-[Blog Article: MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblog.io/mysql-monitor-script/)
+### Blog Article 
+Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblog.io/mysql-monitor-script/)
