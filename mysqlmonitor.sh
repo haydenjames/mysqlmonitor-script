@@ -5,9 +5,9 @@ INTERVAL=10
 
 TITLE="MySQL Monitor (q = exit)"
 
-# The extended-status variables
+# The extended-status variables (removing Innodb_buffer_pool_instances)
 MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
-  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_size|Innodb_buffer_pool_reads|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_buffer_pool_pages_free|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
+  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_pages_free|Innodb_buffer_pool_reads|Innodb_buffer_pool_size|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
   | grep -v "Aborted_connects_preauth" \
   | grep -v "Max_used_connections_time" \
   | grep -v "Uptime_since_flush_status"'
@@ -46,9 +46,9 @@ while true; do
     function shortSizeMB(mb) {
       if (mb >= 1024) {
         gb = mb / 1024
-        return sprintf("%.0f GB", gb) 
+        return sprintf("%.0f GB", gb)
       } else {
-        return sprintf("%.0f MB", mb) 
+        return sprintf("%.0f MB", mb)
       }
     }
 
@@ -60,11 +60,11 @@ while true; do
       desc["Created_tmp_disk_tables"]          = "Temp tables created on disk"
       desc["Created_tmp_files"]                = "Temp files created by MySQL"
       desc["Created_tmp_tables"]               = "Temp tables created in memory"
-      desc["Innodb_buffer_pool_size"]          = "InnoDB buffer pool size (bytes)"
+      desc["Innodb_buffer_pool_pages_free"]    = "Free pages in InnoDB buffer pool"
       desc["Innodb_buffer_pool_reads"]         = "Logical reads from disk into buffer"
+      desc["Innodb_buffer_pool_size"]          = "InnoDB buffer pool size (bytes)"
       desc["Innodb_buffer_pool_wait_free"]     = "Waits for free pages in buffer pool"
       desc["Innodb_buffer_pool_write_requests"]= "Writes requested to InnoDB buffer"
-      desc["Innodb_buffer_pool_pages_free"]    = "Free pages in InnoDB buffer pool"
       desc["Innodb_data_reads"]                = "Data pages read from disk"
       desc["Innodb_data_writes"]               = "Data pages written to disk"
       desc["Innodb_log_waits"]                 = "Log waits for buffer flushes"
@@ -133,11 +133,16 @@ while true; do
         tmp_disk_ratio = 100 * data["Created_tmp_disk_tables"] / data["Created_tmp_tables"]
       }
 
-      # Key read hit ratio
-      key_read_ratio = ""
-      if (("Key_reads" in data) && ("Key_read_requests" in data) && (data["Key_read_requests"] > 0)) {
-        # read hit ratio = 1 - (miss ratio)
-        key_read_ratio = 100 * (1 - (data["Key_reads"] / data["Key_read_requests"]))
+      # Thread Cache Hit Ratio
+      thread_cache_ratio = ""
+      if (("Threads_created" in data) && ("Connections" in data) && (data["Connections"] > 0)) {
+        thread_cache_ratio = 100 * (1 - (data["Threads_created"] / data["Connections"]))
+      }
+
+      # Table Cache Hit Ratio
+      table_cache_ratio = ""
+      if (("Opened_tables" in data) && ("Connections" in data) && (data["Connections"] > 0)) {
+        table_cache_ratio = 100 * (1 - (data["Opened_tables"] / data["Connections"]))
       }
 
       # Print the alphabetical list of raw stats
@@ -177,8 +182,11 @@ while true; do
       if (tmp_disk_ratio != "") {
         printf "%-40s : %.1f%%\n", "Temp Tables on Disk", tmp_disk_ratio
       }
-      if (key_read_ratio != "") {
-        printf "%-40s : %.1f%%\n", "Key Read Hit Ratio", key_read_ratio
+      if (thread_cache_ratio != "") {
+        printf "%-40s : %.1f%%\n", "Thread Cache Hit Ratio", thread_cache_ratio
+      }
+      if (table_cache_ratio != "") {
+        printf "%-40s : %.1f%%\n", "Table Cache Hit Ratio", table_cache_ratio
       }
     }
   '
