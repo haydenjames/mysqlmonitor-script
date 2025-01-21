@@ -55,7 +55,7 @@ while true; do
     BEGIN {
       # Short descriptions for variables
       desc["Aborted_clients"]                  = "Clients ended unexpectedly (timeouts, etc.)"
-      desc["Aborted_connects"]                 = "Failed connections (bad creds, etc.)"
+      desc["Aborted_connects"]                 = "Failed MySQL server connections"
       desc["Connections"]                      = "Total connection attempts"
       desc["Created_tmp_disk_tables"]          = "Temp tables created on disk"
       desc["Created_tmp_files"]                = "Temp files created by MySQL"
