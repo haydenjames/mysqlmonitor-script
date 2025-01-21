@@ -12,7 +12,7 @@ curl -O https://raw.githubusercontent.com/haydenjames/mysqlmonitor-script/main/m
 
 ### Step 2: Make the script executable
 ```bash
-chmod +x mysql-monitor.sh
+chmod +x mysqlmonitor.sh
 ```
 
 ### Step 3: Run the script
