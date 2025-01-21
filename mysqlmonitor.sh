@@ -1,5 +1,5 @@
 #!/bin/bash
-# MySQL Monitor Script 1.2
+# MySQL Monitor Script v2025.01.21
 
 # Set the refresh interval
 INTERVAL=5
@@ -25,9 +25,29 @@ while true; do
 
   # Execute the MySQL command and format the output, including short explanations
   eval "$MYSQL_CMD" | awk '
+    function prettyTime(u) {
+      # Convert total seconds into years, months, days, hours, minutes, seconds
+      years   = int(u/31536000);  u = u % 31536000
+      months  = int(u/2592000);   u = u % 2592000
+      days    = int(u/86400);     u = u % 86400
+      hours   = int(u/3600);      u = u % 3600
+      minutes = int(u/60)
+      seconds = u % 60
+
+      # Build a string showing only non-zero parts
+      result = ""
+      if (years   > 0) result = result years   "y "
+      if (months  > 0) result = result months  "m "
+      if (days    > 0) result = result days    "d "
+      if (hours   > 0) result = result hours   "h "
+      if (minutes > 0) result = result minutes "m "
+      if (seconds > 0) result = result seconds "s"
+      if (result == "") result = "0s"
+      return result
+    }
+
     BEGIN {
       # Short descriptions for each status variable
-      # Aim for roughly 5–10 words
       desc["Innodb_buffer_pool_size"]          = "Size of InnoDB buffer pool"
       desc["Aborted_clients"]                  = "Clients ended unexpectedly (timeouts, etc.)"
       desc["Aborted_connects"]                 = "Failed connections (bad creds, etc.)"
@@ -73,6 +93,14 @@ while true; do
       varName=$2
       varValue=$4
 
+      if (varName == "Uptime") {
+        # Convert seconds to more readable format
+        pretty = prettyTime(varValue)
+        varValueFormatted = pretty
+      } else {
+        varValueFormatted = varValue
+      }
+
       # If this variable has a description in our array, use it
       if (varName in desc) {
         explanation = desc[varName]
@@ -82,9 +110,9 @@ while true; do
 
       # Highlight Innodb_buffer_pool_pages_free if it hits zero
       if (varName == "Innodb_buffer_pool_pages_free" && varValue == 0) {
-        printf "\033[0;31m%-40s | %-20s | %s\033[0m\n", varName, varValue, explanation
+        printf "\033[0;31m%-40s | %-20s | %s\033[0m\n", varName, varValueFormatted, explanation
       } else {
-        printf "%-40s | %-20s | %s\n", varName, varValue, explanation
+        printf "%-40s | %-20s | %s\n", varName, varValueFormatted, explanation
       }
     }
   '
@@ -132,4 +160,3 @@ while true; do
     break
   fi
 done
-
