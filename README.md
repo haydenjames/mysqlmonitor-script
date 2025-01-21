@@ -4,12 +4,11 @@ This is a lightweight bash script designed to provide sysadmins and DBAs with a 
 
 ## How to Install and Use
 
-```bash
 # Step 1: Download the script
-curl -O https://raw.githubusercontent.com/haydenjames/mysqlmonitor-script/main/mysqlmonitor.sh
+`curl -O https://raw.githubusercontent.com/haydenjames/mysqlmonitor-script/main/mysqlmonitor.sh`
 
 # Step 2: Make the script executable
-chmod +x mysql-monitor.sh
+`chmod +x mysql-monitor.sh`
 
 # Step 3: Run the script
-./mysqlmonitor.sh
+`./mysqlmonitor.sh`
