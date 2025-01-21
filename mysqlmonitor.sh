@@ -1,7 +1,7 @@
 #!/bin/bash
 # MySQL Monitor Script v2025.01.21
 
-INTERVAL=2
+INTERVAL=5
 TITLE="MySQL Monitor (q = exit)"
 
 # The extended-status variables
