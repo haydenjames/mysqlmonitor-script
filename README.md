@@ -6,7 +6,7 @@ This is a lightweight bash script designed to provide sysadmins and DBAs with a 
 
 ```bash
 # Step 1: Download the script
-curl -O https://raw.githubusercontent.com/haydenjames/mysql-monitor-script/main/mysqlmonitor.sh
+curl -O https://raw.githubusercontent.com/haydenjames/mysqlmonitor-script/main/mysqlmonitor.sh
 
 # Step 2: Make the script executable
 chmod +x mysql-monitor.sh
