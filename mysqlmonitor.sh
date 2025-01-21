@@ -7,7 +7,7 @@ TITLE="MySQL Monitor (q = exit)"
 
 # The extended-status variables
 MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
-  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_size|Innodb_buffer_pool_reads|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_buffer_pool_pages_free|Innodb_data_fsyncs|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Innodb_os_log_fsyncs|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
+  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_size|Innodb_buffer_pool_reads|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_buffer_pool_pages_free|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
   | grep -v "Aborted_connects_preauth" \
   | grep -v "Max_used_connections_time" \
   | grep -v "Uptime_since_flush_status"'
@@ -65,12 +65,10 @@ while true; do
       desc["Innodb_buffer_pool_wait_free"]     = "Waits for free pages in buffer pool"
       desc["Innodb_buffer_pool_write_requests"]= "Writes requested to InnoDB buffer"
       desc["Innodb_buffer_pool_pages_free"]    = "Free pages in InnoDB buffer pool"
-      desc["Innodb_data_fsyncs"]               = "fsync() calls (disk) for InnoDB data files"
       desc["Innodb_data_reads"]                = "Data pages read from disk"
       desc["Innodb_data_writes"]               = "Data pages written to disk"
       desc["Innodb_log_waits"]                 = "Log waits for buffer flushes"
       desc["Innodb_log_writes"]                = "Log writes to InnoDB log file"
-      desc["Innodb_os_log_fsyncs"]             = "fsync() calls (disk) for InnoDB log file"
       desc["Key_reads"]                        = "Key blocks physically read from disk"
       desc["Key_read_requests"]                = "Requests to read key blocks"
       desc["Key_writes"]                       = "Key blocks physically written to disk"
