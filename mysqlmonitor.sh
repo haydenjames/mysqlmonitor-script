@@ -1,62 +1,68 @@
 #!/bin/bash
 # MySQL Monitor Script v2025.01.21
 
-# Set the refresh interval
-INTERVAL=5
-
+INTERVAL=2
 TITLE="MySQL Monitor (q = exit)"
 
-# MySQL extended-status command
+# The extended-status variables
 MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
-  | grep -E "Innodb_buffer_pool_size|Aborted_clients|Aborted_connects|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_reads|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_buffer_pool_pages_free|Innodb_data_fsyncs|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Innodb_os_log_fsyncs|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
+  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_size|Innodb_buffer_pool_reads|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_buffer_pool_pages_free|Innodb_data_fsyncs|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Innodb_os_log_fsyncs|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
   | grep -v "Aborted_connects_preauth" \
   | grep -v "Max_used_connections_time" \
   | grep -v "Uptime_since_flush_status"'
 
-# Trap CTRL+C to gracefully exit
+# Handle CTRL+C
 trap "echo -e '\nExiting MySQL Monitor. Goodbye!'; exit" SIGINT
 
 while true; do
   clear
-
   echo "MySQL Metrics"
   printf "%-40s | %-20s | %s\n" \
     "----------------------------------------" "--------------------" "-------------------------------"
 
-  # Execute the MySQL command and format the output, including short explanations
+  # Run the command and pipe into AWK for formatting
   eval "$MYSQL_CMD" | awk '
-    function prettyTime(u) {
-      # Convert total seconds into years, months, days, hours, minutes, seconds
-      years   = int(u/31536000);  u = u % 31536000
-      months  = int(u/2592000);   u = u % 2592000
-      days    = int(u/86400);     u = u % 86400
-      hours   = int(u/3600);      u = u % 3600
-      minutes = int(u/60)
-      seconds = u % 60
+    # Converts seconds to a human-readable "x d y h z m" etc.
+    function prettyTime(sec) {
+      years   = int(sec / 31536000); sec %= 31536000
+      months  = int(sec / 2592000);  sec %= 2592000
+      days    = int(sec / 86400);    sec %= 86400
+      hours   = int(sec / 3600);     sec %= 3600
+      minutes = int(sec / 60);
+      seconds = sec % 60;
 
-      # Build a string showing only non-zero parts
-      result = ""
-      if (years   > 0) result = result years   "y "
-      if (months  > 0) result = result months  "m "
-      if (days    > 0) result = result days    "d "
-      if (hours   > 0) result = result hours   "h "
-      if (minutes > 0) result = result minutes "m "
-      if (seconds > 0) result = result seconds "s"
-      if (result == "") result = "0s"
-      return result
+      out=""
+      if (years   > 0) out = out years   "y "
+      if (months  > 0) out = out months  "m "
+      if (days    > 0) out = out days    "d "
+      if (hours   > 0) out = out hours   "h "
+      if (minutes > 0) out = out minutes "m "
+      if (seconds > 0) out = out seconds "s"
+      return (out == "") ? "0s" : out
+    }
+
+    # Convert values in MB to either XX MB or XX GB.
+    function shortSizeMB(mb) {
+      if (mb >= 1024) {
+        gb = mb / 1024
+        return sprintf("%.0f GB", gb) 
+      } else {
+        return sprintf("%.0f MB", mb) 
+      }
     }
 
     BEGIN {
-      # Short descriptions for each status variable
-      desc["Innodb_buffer_pool_size"]          = "Size of InnoDB buffer pool"
+      # Short descriptions for raw variables
       desc["Aborted_clients"]                  = "Clients ended unexpectedly (timeouts, etc.)"
       desc["Aborted_connects"]                 = "Failed connections (bad creds, etc.)"
-      desc["Created_tmp_disk_tables"]          = "Temporary tables created on disk"
-      desc["Created_tmp_files"]                = "Temporary files created by MySQL"
-      desc["Created_tmp_tables"]               = "Temporary tables created in memory"
+      desc["Connections"]                      = "Total connection attempts"
+      desc["Created_tmp_disk_tables"]          = "Temp tables created on disk"
+      desc["Created_tmp_files"]                = "Temp files created by MySQL"
+      desc["Created_tmp_tables"]               = "Temp tables created in memory"
+      desc["Innodb_buffer_pool_size"]          = "InnoDB buffer pool size (bytes)"
       desc["Innodb_buffer_pool_reads"]         = "Logical reads from disk into buffer"
       desc["Innodb_buffer_pool_wait_free"]     = "Waits for free pages in buffer pool"
-      desc["Innodb_buffer_pool_write_requests"] = "Writes requested to InnoDB buffer"
+      desc["Innodb_buffer_pool_write_requests"]= "Writes requested to InnoDB buffer"
       desc["Innodb_buffer_pool_pages_free"]    = "Free pages in InnoDB buffer pool"
       desc["Innodb_data_fsyncs"]               = "fsync() calls (disk) for InnoDB data files"
       desc["Innodb_data_reads"]                = "Data pages read from disk"
@@ -90,38 +96,99 @@ while true; do
     }
 
     {
-      varName=$2
-      varValue=$4
+      varName  = $2
+      varValue = $4
+      data[varName] = varValue
+    }
 
-      if (varName == "Uptime") {
-        # Convert seconds to more readable format
-        pretty = prettyTime(varValue)
-        varValueFormatted = pretty
-      } else {
-        varValueFormatted = varValue
+    END {
+      # Build a list of keys
+      count = 0
+      for (v in data) {
+        count++
+        keys[count] = v
+      }
+      asort(keys)  # Sort the array of keys
+
+      # Prepare derived values
+      # InnoDB Buffer Pool
+      ibp_size_mb = ""
+      if ("Innodb_buffer_pool_size" in data) {
+        ibp_size_mb = data["Innodb_buffer_pool_size"] / (1024 * 1024)
+      }
+      # Estimate free pages in MB, then we’ll do shortSizeMB on it
+      ibp_free_mb = ""
+      if ("Innodb_buffer_pool_pages_free" in data) {
+        ibp_free_mb = data["Innodb_buffer_pool_pages_free"] * 16 / 1024
       }
 
-      # If this variable has a description in our array, use it
-      if (varName in desc) {
-        explanation = desc[varName]
-      } else {
-        explanation = "No description available"
+      # Queries per second (QPS)
+      qps = ""
+      if (("Questions" in data) && ("Uptime" in data) && (data["Uptime"] > 0)) {
+        qps = data["Questions"] / data["Uptime"]
       }
 
-      # Highlight Innodb_buffer_pool_pages_free if it hits zero
-      if (varName == "Innodb_buffer_pool_pages_free" && varValue == 0) {
-        printf "\033[0;31m%-40s | %-20s | %s\033[0m\n", varName, varValueFormatted, explanation
-      } else {
-        printf "%-40s | %-20s | %s\n", varName, varValueFormatted, explanation
+      # Temp table disk ratio
+      tmp_disk_ratio = ""
+      if (("Created_tmp_disk_tables" in data) && ("Created_tmp_tables" in data) && (data["Created_tmp_tables"] > 0)) {
+        tmp_disk_ratio = 100 * data["Created_tmp_disk_tables"] / data["Created_tmp_tables"]
+      }
+
+      # Key read hit ratio
+      key_read_ratio = ""
+      if (("Key_reads" in data) && ("Key_read_requests" in data) && (data["Key_read_requests"] > 0)) {
+        # read hit ratio = 1 - (miss ratio)
+        key_read_ratio = 100 * (1 - (data["Key_reads"] / data["Key_read_requests"]))
+      }
+
+      # Print the alphabetical list of raw stats
+      for (i=1; i<=count; i++) {
+        varName = keys[i]
+        explanation = (varName in desc) ? desc[varName] : "No description available"
+        val = data[varName]
+
+        # Pretty-print Uptime
+        if (varName == "Uptime") {
+          val = prettyTime(val)
+        }
+
+        # Highlight zero free pages if needed
+        if (varName == "Innodb_buffer_pool_pages_free" && data[varName] == 0) {
+          printf "\033[0;31m%-40s | %-20s | %s\033[0m\n", varName, val, explanation
+        } else {
+          printf "%-40s | %-20s | %s\n", varName, val, explanation
+        }
+      }
+
+      print ""
+      print "Additional Metrics"
+      print "----------------------------------------"
+      if (ibp_size_mb != "") {
+        printf "%-40s : %s\n", \
+          "InnoDB Buffer Pool Size", shortSizeMB(ibp_size_mb)
+      }
+      if (ibp_free_mb != "") {
+        printf "%-40s : %s\n", \
+          "InnoDB Buffer Pool Free (Est.)", shortSizeMB(ibp_free_mb)
+      }
+      if (qps != "") {
+        # Keep a small decimal for QPS, but you can change to integer if desired
+        printf "%-40s : %.2f QPS\n", "Queries per Second (approx)", qps
+      }
+      if (tmp_disk_ratio != "") {
+        printf "%-40s : %.1f%%\n", "Temp Tables on Disk", tmp_disk_ratio
+      }
+      if (key_read_ratio != "") {
+        printf "%-40s : %.1f%%\n", "Key Read Hit Ratio", key_read_ratio
       }
     }
   '
 
+  # System Memory Section
   echo
   echo "System Memory (GB)"
   printf "%-40s | %-20s\n" "----------------------------------------" "--------------------"
 
-  # Fetch system memory info in bytes (total, used, free, available)
   mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
   mem_array=($mem_raw)
 
@@ -130,22 +197,20 @@ while true; do
   mem_free_bytes=${mem_array[2]}
   mem_avail_bytes=${mem_array[3]}
 
-  # Convert bytes to GB
   mem_total_gb=$(bc -l <<< "scale=2; $mem_total_bytes/1024/1024/1024")
   mem_used_gb=$(bc -l <<< "scale=2; $mem_used_bytes/1024/1024/1024")
   mem_free_gb=$(bc -l <<< "scale=2; $mem_free_bytes/1024/1024/1024")
   mem_avail_gb=$(bc -l <<< "scale=2; $mem_avail_bytes/1024/1024/1024")
 
-  # Determine percent of total memory that is available
   avail_mem_percentage=$(( (100 * mem_avail_bytes) / mem_total_bytes ))
 
   printf "%-40s | %s\n" "Total Memory"  "$mem_total_gb"
   printf "%-40s | %s\n" "Used Memory"   "$mem_used_gb"
   printf "%-40s | %s\n" "Free Memory"   "$mem_free_gb"
 
-  # Highlight Available Memory in red if below 10%
   if [ "$avail_mem_percentage" -lt 10 ]; then
-    printf "\033[0;31m%-40s | %s (Critical: ${avail_mem_percentage}%%)\033[0m\n" "Available Memory" "$mem_avail_gb"
+    printf "\033[0;31m%-40s | %s (Critical: ${avail_mem_percentage}%%)\033[0m\n" \
+      "Available Memory" "$mem_avail_gb"
   else
     printf "%-40s | %s\n" "Available Memory" "$mem_avail_gb"
   fi
@@ -153,7 +218,6 @@ while true; do
   echo
   echo "$TITLE"
 
-  # Wait for keypress or interval. "q" = exit.
   read -t "$INTERVAL" -n 1 -r key
   if [[ $key == "q" || $key == "Q" ]]; then
     echo -e "\nQuitting MySQL Monitor. Goodbye!"
