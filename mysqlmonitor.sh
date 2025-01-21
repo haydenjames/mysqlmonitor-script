@@ -170,11 +170,11 @@ while true; do
       }
       if (ibp_free_mb != "") {
         printf "%-40s : %s\n", \
-          "InnoDB Buffer Pool Free (Est.)", shortSizeMB(ibp_free_mb)
+          "InnoDB Buffer Pool Free", shortSizeMB(ibp_free_mb)
       }
       if (qps != "") {
         # Keep a small decimal for QPS, but you can change to integer if desired
-        printf "%-40s : %.2f QPS\n", "Queries per Second (approx)", qps
+        printf "%-40s : %.2f QPS\n", "Queries per Second", qps
       }
       if (tmp_disk_ratio != "") {
         printf "%-40s : %.1f%%\n", "Temp Tables on Disk", tmp_disk_ratio
