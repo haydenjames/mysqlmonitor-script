@@ -7,7 +7,7 @@ TITLE="MySQL Monitor (q = exit)"
 
 # The extended-status variables
 MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
-  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_pages_free|Innodb_buffer_pool_reads|Innodb_buffer_pool_size|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
+  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_pages_free|Innodb_buffer_pool_reads|Innodb_buffer_pool_read_requests|Innodb_buffer_pool_size|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
   | grep -v "Aborted_connects_preauth" \
   | grep -v "Max_used_connections_time" \
   | grep -v "Uptime_since_flush_status"'
@@ -62,6 +62,7 @@ while true; do
       desc["Created_tmp_tables"]               = "Temp tables created in memory"
       desc["Innodb_buffer_pool_pages_free"]    = "Free pages in InnoDB buffer pool"
       desc["Innodb_buffer_pool_reads"]         = "Logical reads from disk into buffer"
+      desc["Innodb_buffer_pool_read_requests"] = "Total logical read requests to buffer"
       desc["Innodb_buffer_pool_size"]          = "InnoDB buffer pool size (bytes)"
       desc["Innodb_buffer_pool_wait_free"]     = "Waits for free pages in buffer pool"
       desc["Innodb_buffer_pool_write_requests"]= "Writes requested to InnoDB buffer"
@@ -145,6 +146,16 @@ while true; do
         table_cache_ratio = 100 * (1 - (data["Opened_tables"] / data["Connections"]))
       }
 
+      # InnoDB Buffer Pool Hit Ratio, clamped to 0% if negative
+      ibp_efficiency = ""
+      if (("Innodb_buffer_pool_read_requests" in data) && ("Innodb_buffer_pool_reads" in data) && (data["Innodb_buffer_pool_read_requests"] > 0)) {
+        temp_ratio = 100 * (1 - (data["Innodb_buffer_pool_reads"] / data["Innodb_buffer_pool_read_requests"]))
+        if (temp_ratio < 0) {
+          temp_ratio = 0
+        }
+        ibp_efficiency = temp_ratio
+      }
+
       # Print the alphabetical list of raw stats
       for (i=1; i<=count; i++) {
         varName = keys[i]
@@ -176,7 +187,7 @@ while true; do
           "InnoDB Buffer Pool Free", shortSizeMB(ibp_free_mb)
       }
       if (qps != "") {
-        # Keep a small decimal for QPS, but you can change to integer if desired
+        # Keep a small decimal for QPS
         printf "%-40s : %.2f QPS\n", "Queries per Second", qps
       }
       if (tmp_disk_ratio != "") {
@@ -187,6 +198,9 @@ while true; do
       }
       if (table_cache_ratio != "") {
         printf "%-40s : %.1f%%\n", "Table Cache Hit Ratio", table_cache_ratio
+      }
+      if (ibp_efficiency != "") {
+        printf "%-40s : %.1f%%\n", "InnoDB Buffer Pool Hit Ratio", ibp_efficiency
       }
     }
   '
