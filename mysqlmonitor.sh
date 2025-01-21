@@ -4,7 +4,7 @@
 # Set the refresh interval
 INTERVAL=5
 
-TITLE="MySQL Monitor - consult.haydenjames.io"
+TITLE="MySQL Monitor - consult.haydenjames.io | linuxblog.io"
 
 # MySQL extended-status command
 MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
