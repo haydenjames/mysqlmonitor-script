@@ -92,7 +92,7 @@ while true; do
       desc["Threads_connected"]                = "Currently open connections"
       desc["Threads_created"]                  = "Threads created for connections"
       desc["Threads_running"]                  = "Threads currently running queries"
-      desc["Uptime"]                           = "Ensure 24h+ uptime for accurate data"
+      desc["Uptime"]                           = "Ensure 24h+ uptime for accurate data!!"
     }
 
     {
