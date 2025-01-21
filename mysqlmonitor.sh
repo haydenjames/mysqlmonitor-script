@@ -2,6 +2,7 @@
 # MySQL Monitor Script v2025.01.21
 
 INTERVAL=10
+
 TITLE="MySQL Monitor (q = exit)"
 
 # The extended-status variables
@@ -20,7 +21,7 @@ while true; do
   printf "%-40s | %-20s | %s\n" \
     "----------------------------------------" "--------------------" "-------------------------------"
 
-  # Run the command and pipe into AWK for formatting
+  # Run the command and pipe into AWK
   eval "$MYSQL_CMD" | awk '
     # Converts seconds to a human-readable "x d y h z m" etc.
     function prettyTime(sec) {
@@ -52,7 +53,7 @@ while true; do
     }
 
     BEGIN {
-      # Short descriptions for raw variables
+      # Short descriptions for variables
       desc["Aborted_clients"]                  = "Clients ended unexpectedly (timeouts, etc.)"
       desc["Aborted_connects"]                 = "Failed connections (bad creds, etc.)"
       desc["Connections"]                      = "Total connection attempts"
@@ -110,7 +111,7 @@ while true; do
       }
       asort(keys)  # Sort the array of keys
 
-      # Prepare derived values
+      # Prepare the values
       # InnoDB Buffer Pool
       ibp_size_mb = ""
       if ("Innodb_buffer_pool_size" in data) {
