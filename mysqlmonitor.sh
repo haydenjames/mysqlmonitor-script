@@ -177,7 +177,7 @@ while true; do
 
       print ""
       print "Additional Metrics"
-      print "----------------------------------------"
+      printf "%-40s | %-20s | %-20s\n", "----------------------------------------", "--------------------", "-------------------------------"
       if (ibp_size_mb != "") {
         printf "%-40s : %s\n", \
           "InnoDB Buffer Pool Size", shortSizeMB(ibp_size_mb)
