@@ -36,3 +36,47 @@ chmod +x mysqlmonitor.sh && \
 
 ### Blog Article 
 Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblog.io/mysql-monitor-script/)
+
+## Common Troubleshooting
+Here are some common issues and how to resolve them:
+
+### 1. Missing MySQL Credentials
+If the script fails to connect to your MySQL server due to missing credentials, you may need to create a `~/.my.cnf` file for automatic authentication.
+
+#### Steps to Create `.my.cnf`:
+1. Create the file:
+    ```bash
+    nano ~/.my.cnf
+    ```
+
+2. Add the following structure to the file:
+    ```makefile
+    [client]
+    user=your_mysql_username
+    password=your_mysql_password
+    ```
+
+3. Secure the file permissions:
+    ```bash
+    chmod 600 ~/.my.cnf
+    ```
+
+4. Rerun the script.
+
+---
+
+### 2. Running the Script with `sudo`
+If you encounter permission issues as a non-root user, try running the script with `sudo`:
+```bash
+sudo ./mysqlmonitor.sh
+```
+
+---
+
+### 3. Verifying MySQL Status
+If the script fails to connect even with credentials:
+- Ensure the MySQL server is running:
+    ```bash
+    sudo systemctl status mysql
+    ```
+- Verify that the credentials in `~/.my.cnf` are correct.
