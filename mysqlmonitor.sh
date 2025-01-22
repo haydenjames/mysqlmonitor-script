@@ -182,13 +182,13 @@ for (i=1; i<=count; i++) {
   varName = keys[i]
   explanation = (varName in desc) ? desc[varName] : "No description available"
 
-  if (varName == "Uptime") {
-    val = prettyTime(data[varName])  # Format Uptime
-    # Adjust alignment to obey the column width and remove the 2nd "|"
-    printf "%-" col1_width "s | %s %s\n", varName, val, explanation
-    # Skip further processing for Uptime
-    continue
-  } 
+if (varName == "Uptime") {
+  val = prettyTime(data[varName])  # Format Uptime
+  # Append the note "(Wait 24h for accuracy)" to the varName
+  printf "%-" col1_width "s | %s %s\n", varName " (Wait 24h for accuracy)", val, explanation
+  # Skip further processing for Uptime
+  continue
+}
 
   val = data[varName]
 
