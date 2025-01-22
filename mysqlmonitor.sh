@@ -78,7 +78,7 @@ while true; do
       desc["Open_files"]                       = "Files currently open by MySQL"
       desc["Open_tables"]                      = "Tables currently open"
       desc["Opened_tables"]                    = "Total tables opened since start"
-      desc["Questions"]                        = "Statements sent to server"
+      desc["Questions"]                        = "Total number of client requests"
       desc["Select_full_join"]                 = "Joins without usable indexes"
       desc["Select_scan"]                      = "Full table scans in SELECT queries"
       desc["Slow_queries"]                     = "Queries exceeding long_query_time"
