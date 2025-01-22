@@ -12,10 +12,24 @@ MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
   | grep -v "Max_used_connections_time" \
   | grep -v "Uptime_since_flush_status"'
 
-# Check if MySQL server is reachable
-if ! mysqladmin ping > /dev/null 2>&1; then
-  echo "Error: MySQL server is not running or requires credentials."
-  exit 1
+# Test if MySQL command requiring credentials succeeds
+if ! eval "$MYSQL_CMD" > /dev/null 2>&1; then
+  # Check for .my.cnf
+  if [ ! -f ~/.my.cnf ]; then
+    echo "It seems MySQL credentials are missing."
+    echo "Please create a ~/.my.cnf file with the following structure:"
+    echo ""
+    echo "[client]"
+    echo "user=your_username"
+    echo "password=your_password"
+    echo ""
+    echo "Ensure the file permissions are secure: chmod 600 ~/.my.cnf"
+    exit 1
+  else
+    echo "Credentials found in ~/.my.cnf, but the command still failed."
+    echo "Please verify your credentials or server status."
+    exit 1
+  fi
 fi
 
 # Handle CTRL+C
