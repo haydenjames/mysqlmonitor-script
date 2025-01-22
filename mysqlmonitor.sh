@@ -54,7 +54,7 @@ while true; do
 
     BEGIN {
       # Short descriptions for variables
-      desc["Aborted_clients"]                  = "Client connections ended unexpectedly"
+      desc["Aborted_clients"]                  = "Failed client connections"
       desc["Aborted_connects"]                 = "Failed MySQL server connections"
       desc["Connections"]                      = "Total connection attempts"
       desc["Created_tmp_disk_tables"]          = "Temp tables created on disk"
@@ -92,7 +92,7 @@ while true; do
       desc["Threads_connected"]                = "Currently open connections"
       desc["Threads_created"]                  = "Threads created for connections"
       desc["Threads_running"]                  = "Threads currently running queries"
-      desc["Uptime"]                           = "Ensure 24h+ uptime for accurate data!!"
+      desc["Uptime"]                           = "Wait > 24 hrs for accurate data!!"
     }
 
     {
