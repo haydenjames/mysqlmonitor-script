@@ -181,6 +181,15 @@ col3_width = (col3_width > 25 ? col3_width : 25)
 for (i=1; i<=count; i++) {
   varName = keys[i]
   explanation = (varName in desc) ? desc[varName] : "No description available"
+
+  if (varName == "Uptime") {
+    val = prettyTime(data[varName])  # Format Uptime
+    # Adjust alignment to obey the column width and remove the 2nd "|"
+    printf "%-" col1_width "s | %s %s\n", varName, val, explanation
+    # Skip further processing for Uptime
+    continue
+  } 
+
   val = data[varName]
 
   # Highlight specific values if needed
