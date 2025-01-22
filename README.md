@@ -34,8 +34,8 @@ chmod +x mysqlmonitor.sh && \
 ./mysqlmonitor.sh
 ```
 
-### Blog Article 
-Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblog.io/mysql-monitor-script/)
+## Full Guide 
+Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblog.io/mysql-monitor-script/) - This blog post provides detailed guidance on the variables used in the script, along with links to common MySQL tuning pitfalls and tips to help you optimize your database performance.
 
 ## Common Troubleshooting
 Here are some common issues and how to resolve them:
@@ -79,4 +79,11 @@ If the script fails to connect even with credentials:
     ```bash
     sudo systemctl status mysql
     ```
+    or
+    ```bash
+    sudo systemctl status mariadb
+    ```
 - Verify that the credentials in `~/.my.cnf` are correct.
+
+---------------------------------------------------
+Thank you for using MySQL Monitor, we hope it helps simplify your database monitoring and tuning tasks!
