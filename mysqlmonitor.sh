@@ -11,7 +11,7 @@ done
 
 INTERVAL=10
 
-TITLE="MySQL Monitor v2025.01.23 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2025.01.23.2 (Press 'q' to exit)"
 
 # The extended-status variables
 MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
