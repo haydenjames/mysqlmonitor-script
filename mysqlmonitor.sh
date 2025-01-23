@@ -1,6 +1,14 @@
 #!/bin/bash
 # MySQL Monitor Script
 
+# Check for required tools
+for tool in mysqladmin awk bc; do
+  if ! command -v "$tool" &> /dev/null; then
+    echo "Error: $tool is not installed. Please install it and try again."
+    exit 1
+  fi
+done
+
 INTERVAL=10
 
 TITLE="MySQL Monitor v2025.01.22 (Press 'q' to exit)"
