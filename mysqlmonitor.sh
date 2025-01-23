@@ -149,12 +149,12 @@ while true; do
       desc["Uptime"]                           = ""
 
       # Additional Metrics descriptions
-      desc["Queries per Second"]               = "Ensure it aligns with traffic and app behavior."
-      desc["InnoDB Buffer Pool Free"]          = "Should rarely be low or full."
-      desc["InnoDB Buffer Pool Hit Ratio"]     = "High QPS? Keep this high too."
-      desc["Thread Cache Hit Ratio"]           = "Aim for 90% or higher."
-      desc["Table Cache Hit Ratio"]            = "Always above 90% for efficiency."
-      desc["Temp tables created on disk"]      = "Keep it low; disk I/O is slow!"
+      desc["Queries per Second"]               = "Should match traffic and app changes."
+      desc["InnoDB Buffer Pool Free"]          = "Zero/low? Check innodb_buffer_pool_size."
+      desc["InnoDB Buffer Pool Hit Ratio"]     = "High QPS? Then aim for hit ratio."
+      desc["Thread Cache Hit Ratio"]           = "Above 90% for performance/efficiency."
+      desc["Table Cache Hit Ratio"]            = "Above 90% for performance/efficiency."
+      desc["Temp tables created on disk"]      = "Keep this low! Disk I/O is much slower!"
 
       # Define additional metrics labels
       additional_labels[1] = "Queries per Second"
@@ -276,7 +276,7 @@ while true; do
 # Additional Metrics section
 print ""
 print "Additional Metrics"
-printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", "--------------------", "", ""
+printf "%-" col1_width "s  %-" col2_width "s  %-" col3_width "s\n", "--------------------", "", ""
 
 if (qps != "") {
   printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
