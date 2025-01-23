@@ -39,8 +39,19 @@ Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblo
 
 ## Changelog
 
+### v2025.01.23
+Check for required tools (mysqladmin, awk and bc) at the start of the script. Prompt user of any dependencies. 
+
+### v2025.01.22
+First test connection without credentials (default of most scripts). If credentials are required prompt the user to setup using .my.cnf.
+
 ### v2025.01.21
 Reduced width of output for smaller screens.
+
+## TO DO
+
+### Add a Help screen
+Add a --help flag for users who want to see usage information.
 
 ## Common Troubleshooting
 Here are some common issues and how to resolve them:
