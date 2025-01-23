@@ -55,7 +55,7 @@ trap "echo -e '\nExiting MySQL Monitor. Goodbye!'; exit" SIGINT
 while true; do
   # Use tput to clear the screen more efficiently
   tput clear
-  echo "MySQL Metrics"
+  echo "MySQL Runtime Metrics"
   printf "%s\n" "---------------"
 
   # Run the command and pipe into AWK
@@ -151,9 +151,9 @@ while true; do
       # Additional Metrics descriptions
       desc["Queries per Second"]               = "Should match traffic and app changes."
       desc["InnoDB Buffer Pool Free"]          = "Zero/low? Check innodb_buffer_pool_size."
-      desc["InnoDB Buffer Pool Hit Ratio"]     = "High QPS? Then aim for hit ratio."
-      desc["Thread Cache Hit Ratio"]           = "Above 90% for performance/efficiency."
-      desc["Table Cache Hit Ratio"]            = "Above 90% for performance/efficiency."
+      desc["InnoDB Buffer Pool Hit Ratio"]     = "High QPS? Then aim for hit ratio also."
+      desc["Thread Cache Hit Ratio"]           = "Above 90% for best performance/efficiency."
+      desc["Table Cache Hit Ratio"]            = "Above 90% for best performance/efficiency."
       desc["Temp tables created on disk"]      = "Keep this low! Disk I/O is much slower!"
 
       # Define additional metrics labels
@@ -275,7 +275,7 @@ while true; do
 
 # Additional Metrics section
 print ""
-print "Additional Metrics"
+print "MySQL Health Metrics"
 printf "%-" col1_width "s  %-" col2_width "s  %-" col3_width "s\n", "--------------------", "", ""
 
 if (qps != "") {
