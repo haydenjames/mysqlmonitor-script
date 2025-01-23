@@ -242,16 +242,16 @@ if (ibp_efficiency != "") {
   printf "%-" col1_width "s | %.1f%%\n", "InnoDB Buffer Pool Hit Ratio", ibp_efficiency
 }
 
+if (thread_cache_ratio != "") {
+  printf "%-" col1_width "s | %.1f%%\n", "Thread Cache Hit Ratio", thread_cache_ratio
+}
+
 if (table_cache_ratio != "") {
   printf "%-" col1_width "s | %.1f%%\n", "Table Cache Hit Ratio", table_cache_ratio
 }
 
 if (tmp_disk_ratio != "") {
   printf "%-" col1_width "s | %.1f%%\n", "Temp tables created on disk", tmp_disk_ratio
-}
-
-if (thread_cache_ratio != "") {
-  printf "%-" col1_width "s | %.1f%%\n", "Thread Cache Hit Ratio", thread_cache_ratio
 }
 
           }
