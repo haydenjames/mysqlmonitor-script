@@ -9,6 +9,7 @@ for tool in mysqladmin awk bc; do
   fi
 done
 
+# Default refresh interval in seconds
 INTERVAL=10
 
 TITLE="MySQL Monitor v2025.01.23.2 (Press 'q' to exit)"
@@ -21,7 +22,7 @@ MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
   | grep -v "Uptime_since_flush_status"'
 
 # Test if MySQL command requiring credentials succeeds
-if ! eval "$MYSQL_CMD" > /dev/null 2>&1; then
+if ! output=$(eval "$MYSQL_CMD" 2>&1); then
   # Check for .my.cnf
   if [ ! -f ~/.my.cnf ]; then
     echo "It seems MySQL credentials are missing."
@@ -34,7 +35,15 @@ if ! eval "$MYSQL_CMD" > /dev/null 2>&1; then
     echo "Ensure the file permissions are secure: chmod 600 ~/.my.cnf"
     exit 1
   else
+    # Check file permissions
+    file_perm=$(stat -c "%a" ~/.my.cnf)
+    if [ "$file_perm" -ne 600 ]; then
+      echo "Error: ~/.my.cnf permissions are $file_perm. Please set them to 600 using 'chmod 600 ~/.my.cnf'."
+      exit 1
+    fi
     echo "Credentials found in ~/.my.cnf, but the command still failed."
+    echo "MySQL admin output:"
+    echo "$output"
     echo "Please verify your credentials or server status."
     exit 1
   fi
@@ -44,9 +53,10 @@ fi
 trap "echo -e '\nExiting MySQL Monitor. Goodbye!'; exit" SIGINT
 
 while true; do
-  clear
+  # Use tput to clear the screen more efficiently
+  tput clear
   echo "MySQL Metrics"
-  printf "%s\n" "--------------------"
+  printf "%s\n" "---------------"
 
   # Run the command and pipe into AWK
   eval "$MYSQL_CMD" | awk '
@@ -67,6 +77,21 @@ while true; do
       if (minutes > 0) out = out minutes "m "
       if (seconds > 0) out = out seconds "s"
       return (out == "") ? "0s" : out
+    }
+
+    # Converts large numbers into user-friendly formats (K, M, B, T)
+    function formatNumber(num) {
+      if (num >= 1e12) {
+        return sprintf("%.2fT", num / 1e12)  # Trillions
+      } else if (num >= 1e9) {
+        return sprintf("%.2fB", num / 1e9)   # Billions
+      } else if (num >= 1e6) {
+        return sprintf("%.2fM", num / 1e6)   # Millions
+      } else if (num >= 1e3) {
+        return sprintf("%.2fK", num / 1e3)   # Thousands
+      } else {
+        return num  # Small numbers stay as is
+      }
     }
 
     # Convert values in MB to either XX MB or XX GB.
@@ -122,6 +147,22 @@ while true; do
       desc["Threads_created"]                  = "Threads created for connections."
       desc["Threads_running"]                  = "Threads currently running queries."
       desc["Uptime"]                           = ""
+
+      # Additional Metrics descriptions
+      desc["Queries per Second"]               = "Ensure it aligns with traffic and app behavior."
+      desc["InnoDB Buffer Pool Free"]          = "Should rarely be low or full."
+      desc["InnoDB Buffer Pool Hit Ratio"]     = "High QPS? Keep this high too."
+      desc["Thread Cache Hit Ratio"]           = "Aim for 90% or higher."
+      desc["Table Cache Hit Ratio"]            = "Always above 90% for efficiency."
+      desc["Temp tables created on disk"]      = "Keep it low; disk I/O is slow!"
+
+      # Define additional metrics labels
+      additional_labels[1] = "Queries per Second"
+      additional_labels[2] = "InnoDB Buffer Pool Free"
+      additional_labels[3] = "InnoDB Buffer Pool Hit Ratio"
+      additional_labels[4] = "Thread Cache Hit Ratio"
+      additional_labels[5] = "Table Cache Hit Ratio"
+      additional_labels[6] = "Temp tables created on disk"
     }
 
     {
@@ -184,85 +225,98 @@ while true; do
         }
         ibp_efficiency = temp_ratio
       }
-      
-# Calculate column widths dynamically based on content
-col1_width = 0
-col2_width = 0
-col3_width = 0
 
-for (v in data) {
-  if (length(v) > col1_width) col1_width = length(v)  # Longest Metric (varName)
-  if (length(data[v]) > col2_width) col2_width = length(data[v])  # Longest Value (val)
-  if (length(desc[v]) > col3_width) col3_width = length(desc[v])  # Longest Description (explanation)
-}
+      # Calculate column widths dynamically based on content
+      col1_width = 0
+      col2_width = 0
+      col3_width = 0
 
-# Ensure minimum widths for readability
-col1_width = (col1_width > 15 ? col1_width : 15)
-col2_width = (col2_width > 10 ? col2_width : 10)
-col3_width = (col3_width > 25 ? col3_width : 25)
+      for (v in data) {
+        if (length(v) > col1_width) col1_width = length(v)  # Longest Metric (varName)
+        if (length(data[v]) > col2_width) col2_width = length(data[v])  # Longest Value (val)
+        if (length(desc[v]) > col3_width) col3_width = length(desc[v])  # Longest Description (explanation)
+      }
 
-# Print the data with adjusted widths
-for (i=1; i<=count; i++) {
-  varName = keys[i]
-  explanation = (varName in desc) ? desc[varName] : "No description available"
+      # Include additional metrics labels in column width calculation
+      for (i in additional_labels) {
+        label_length = length(additional_labels[i])
+        if (label_length > col1_width) {
+          col1_width = label_length
+        }
+      }
 
-if (varName == "Uptime") {
-  val = prettyTime(data[varName])  # Format Uptime
-  # Append the note "(Wait 24h for accuracy)" to the varName
-  printf "%-" col1_width "s | %s %s\n", varName " (Wait 24h for accuracy)", val, explanation
-  # Skip further processing for Uptime
-  continue
-}
+      # Ensure minimum widths for readability
+      col1_width = (col1_width > 15 ? col1_width : 15)
+      col2_width = (col2_width > 10 ? col2_width : 10)
+      col3_width = (col3_width > 25 ? col3_width : 25)
 
-  val = data[varName]
+      # Print the data with adjusted widths
+      for (i=1; i<=count; i++) {
+        varName = keys[i]
+        explanation = (varName in desc) ? desc[varName] : "No description available"
 
-  # Highlight specific values if needed
-  if (varName == "Innodb_buffer_pool_pages_free" && data[varName] == 0) {
-    printf "\033[0;31m%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\033[0m\n", varName, val, explanation
-  } else {
-    printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", varName, val, explanation
-  }
-}
+	if (varName == "Uptime") {
+	    val = prettyTime(data[varName])  # Format Uptime
+	    # Append the note "(Wait 24h for accuracy)" to the varName
+	    printf "%-" col1_width "s | %s %s\n", varName " (Wait 24h for accuracy)", val, explanation
+	    # Skip further processing for Uptime
+	    continue
+	}
+
+        val = formatNumber(data[varName])
+
+        # Highlight specific values if needed
+        if (varName == "Innodb_buffer_pool_pages_free" && data[varName] == 0) {
+          printf "\033[0;31m%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\033[0m\n", varName, val, explanation
+        } else {
+          printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", varName, val, explanation
+        }
+      }
 
 # Additional Metrics section
 print ""
 print "Additional Metrics"
-printf "%-20s\n", "--------------------"
+printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", "--------------------", "", ""
 
 if (qps != "") {
-  printf "%-" col1_width "s | %.2f QPS\n", "Queries per Second", qps
+  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+    "Queries per Second", sprintf("%.2f QPS", qps), desc["Queries per Second"]
 }
 
 if (ibp_free_mb != "") {
-  printf "%-" col1_width "s | %-" col2_width "s\n", \
-    "InnoDB Buffer Pool Free", shortSizeMB(ibp_free_mb)
+  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+    "InnoDB Buffer Pool Free", shortSizeMB(ibp_free_mb), desc["InnoDB Buffer Pool Free"]
 }
 
 if (ibp_efficiency != "") {
-  printf "%-" col1_width "s | %.1f%%\n", "InnoDB Buffer Pool Hit Ratio", ibp_efficiency
+  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+    "InnoDB Buffer Pool Hit Ratio", sprintf("%.1f%%", ibp_efficiency), desc["InnoDB Buffer Pool Hit Ratio"]
 }
 
 if (thread_cache_ratio != "") {
-  printf "%-" col1_width "s | %.1f%%\n", "Thread Cache Hit Ratio", thread_cache_ratio
+  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+    "Thread Cache Hit Ratio", sprintf("%.1f%%", thread_cache_ratio), desc["Thread Cache Hit Ratio"]
 }
 
 if (table_cache_ratio != "") {
-  printf "%-" col1_width "s | %.1f%%\n", "Table Cache Hit Ratio", table_cache_ratio
+  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+    "Table Cache Hit Ratio", sprintf("%.1f%%", table_cache_ratio), desc["Table Cache Hit Ratio"]
 }
 
 if (tmp_disk_ratio != "") {
-  printf "%-" col1_width "s | %.1f%%\n", "Temp tables created on disk", tmp_disk_ratio
+  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+    "Temp tables created on disk", sprintf("%.1f%%", tmp_disk_ratio), desc["Temp tables created on disk"]
 }
 
-          }
-        '
-        
+    }
+  '
+
   # System Memory Section
   echo
   echo "System Memory (GB)"
-  printf "%s\n" \
-    "--------------------"
+  printf "%s\n" "--------------------"
 
+  # Retrieve memory information in bytes
   mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
   mem_array=($mem_raw)
 
@@ -271,24 +325,27 @@ if (tmp_disk_ratio != "") {
   mem_free_bytes=${mem_array[2]}
   mem_avail_bytes=${mem_array[3]}
 
+  # Convert bytes to gigabytes with two decimal places
   mem_total_gb=$(echo "scale=2; $mem_total_bytes/1024/1024/1024" | bc -l)
   mem_used_gb=$(echo "scale=2; $mem_used_bytes/1024/1024/1024" | bc -l)
   mem_free_gb=$(echo "scale=2; $mem_free_bytes/1024/1024/1024" | bc -l)
   mem_avail_gb=$(echo "scale=2; $mem_avail_bytes/1024/1024/1024" | bc -l)
 
-  avail_mem_percentage=$(( (100 * mem_avail_bytes) / mem_total_bytes ))
+  # Calculate available memory percentage with floating-point precision
+  avail_mem_percentage=$(echo "scale=2; 100 * $mem_avail_bytes / $mem_total_bytes" | bc)
 
-if [ "$avail_mem_percentage" -lt 10 ]; then
-  printf "Total: %s, Used: %s, Free: %s, Available: %s \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
-    "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
-else
-  printf "Total: %s, Used: %s, Free: %s, Available: %s\n" \
-    "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
-fi
+  if (( $(echo "$avail_mem_percentage < 10" | bc -l) )); then
+    printf "Total: %s GB, Used: %s GB, Free: %s GB, Available: %s GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
+      "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
+  else
+    printf "Total: %s GB, Used: %s GB, Free: %s GB, Available: %s GB\n" \
+      "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
+  fi
 
   echo
   echo "$TITLE"
 
+  # Read user input with timeout
   read -t "$INTERVAL" -n 1 -r key
   if [[ $key == "q" || $key == "Q" ]]; then
     echo -e "\nQuitting MySQL Monitor. Goodbye!"
