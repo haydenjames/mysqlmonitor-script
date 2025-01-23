@@ -229,25 +229,31 @@ print ""
 print "Additional Metrics"
 printf "%-20s\n", "--------------------"
 
+if (qps != "") {
+  printf "%-" col1_width "s | %.2f QPS\n", "Queries per Second", qps
+}
+
 if (ibp_free_mb != "") {
   printf "%-" col1_width "s | %-" col2_width "s\n", \
     "InnoDB Buffer Pool Free", shortSizeMB(ibp_free_mb)
 }
-if (qps != "") {
-  printf "%-" col1_width "s | %.2f QPS\n", "Queries per Second", qps
+
+if (ibp_efficiency != "") {
+  printf "%-" col1_width "s | %.1f%%\n", "InnoDB Buffer Pool Hit Ratio", ibp_efficiency
 }
-if (tmp_disk_ratio != "") {
-  printf "%-" col1_width "s | %.1f%%\n", "Temp Tables on Disk", tmp_disk_ratio
-}
+
 if (thread_cache_ratio != "") {
   printf "%-" col1_width "s | %.1f%%\n", "Thread Cache Hit Ratio", thread_cache_ratio
 }
+
 if (table_cache_ratio != "") {
   printf "%-" col1_width "s | %.1f%%\n", "Table Cache Hit Ratio", table_cache_ratio
 }
-if (ibp_efficiency != "") {
-  printf "%-" col1_width "s | %.1f%%\n", "InnoDB Buffer Pool Hit Ratio", ibp_efficiency
-            }
+
+if (tmp_disk_ratio != "") {
+  printf "%-" col1_width "s | %.1f%%\n", "Temp tables created on disk", tmp_disk_ratio
+}
+
           }
         '
         
@@ -289,3 +295,4 @@ fi
     break
   fi
 done
+
