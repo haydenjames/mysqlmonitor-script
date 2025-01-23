@@ -37,6 +37,11 @@ chmod +x mysqlmonitor.sh && \
 ## Complementary Guide 
 Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblog.io/mysql-monitor-script/) - This blog post provides detailed guidance on the variables used in the script, along with links to common MySQL tuning pitfalls and tips to help you optimize your database performance.
 
+## Changelog
+
+### v2025.01.21
+Reduced width of output for smaller screens.
+
 ## Common Troubleshooting
 Here are some common issues and how to resolve them:
 
