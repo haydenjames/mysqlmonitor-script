@@ -16,7 +16,7 @@ TITLE="MySQL Monitor v2025.01.23.5 (Press 'q' to exit)"
 
 # The extended-status variables
 MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
-  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_pages_free|Innodb_buffer_pool_reads|Innodb_buffer_pool_read_requests|Innodb_buffer_pool_size|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_read_requests|Key_writes|Key_write_requests|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_open_cache_hits|Table_open_cache_misses|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
+  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_pages_free|Innodb_buffer_pool_reads|Innodb_buffer_pool_read_requests|Innodb_buffer_pool_size|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_writes|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_open_cache_hits|Table_open_cache_misses|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
   | grep -v "Aborted_connects_preauth" \
   | grep -v "Max_used_connections_time" \
   | grep -v "Uptime_since_flush_status"'
@@ -122,10 +122,8 @@ while true; do
       desc["Innodb_data_writes"]               = "Data pages written to disk."
       desc["Innodb_log_waits"]                 = "Log waits for buffer flushes."
       desc["Innodb_log_writes"]                = "Log writes to InnoDB log file."
-      desc["Key_reads"]                        = "Key blocks read from disk."
-      desc["Key_read_requests"]                = "Requests to read key blocks."
-      desc["Key_writes"]                       = "Key blocks written to disk."
-      desc["Key_write_requests"]               = "Requests to write key blocks."
+      desc["Key_reads"]                        = "MyISAM disk reads (Switch to InnoDB)."
+      desc["Key_writes"]                       = "MyISAM disk writes (Switch to InnoDB)."
       desc["Max_used_connections"]             = "Max concurrent connections so far."
       desc["Open_files"]                       = "Files currently open by MySQL."
       desc["Open_tables"]                      = "Tables currently open."
