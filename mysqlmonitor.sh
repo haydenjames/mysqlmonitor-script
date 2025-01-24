@@ -311,8 +311,6 @@ if (tmp_disk_ratio != "") {
 
   # System Memory Section
   echo
-  echo "System Memory (GB)"
-  printf "%s\n" "--------------------"
 
   # Retrieve memory information in bytes
   mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
@@ -333,10 +331,10 @@ if (tmp_disk_ratio != "") {
   avail_mem_percentage=$(echo "scale=2; 100 * $mem_avail_bytes / $mem_total_bytes" | bc)
 
   if (( $(echo "$avail_mem_percentage < 10" | bc -l) )); then
-    printf "Total: %s GB, Used: %s GB, Free: %s GB, Available: %s GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
+    printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
       "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
   else
-    printf "Total: %s GB, Used: %s GB, Free: %s GB, Available: %s GB\n" \
+    printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB\n" \
       "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
   fi
 
