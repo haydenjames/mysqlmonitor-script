@@ -56,7 +56,7 @@ while true; do
   # Use tput to clear the screen more efficiently
   tput clear
   echo "MySQL Runtime Metrics"
-  printf "%s\n" "---------------"
+  printf "%s\n" "---------------------"
 
   # Run the command and pipe into AWK
   eval "$MYSQL_CMD" | awk '
