@@ -9,7 +9,7 @@
 TITLE="MySQL Monitor v2025.01.25.1 (Press 'q' to exit)"
 
 # Check for required tools
-for tool in mysqladmin awk bc; do
+for tool in mysqladmin awk; do
   if ! command -v "$tool" &> /dev/null; then
     echo "Error: $tool is not installed. Please install it and try again."
     exit 1
@@ -19,7 +19,7 @@ done
 # Default refresh interval in seconds
 INTERVAL=10
 
-# Check if the user provided an interval. Foe example: "./mysqlmonitor.sh 2"
+# Check if the user provided an interval
 if [[ $# -ge 1 ]]; then
   if [[ $1 =~ ^[0-9]+$ ]]; then
     INTERVAL=$1
@@ -325,42 +325,45 @@ if (tmp_disk_ratio != "") {
     }
   '
 
-  # System Memory Section
-  echo
+# System Memory Section
+echo
 
-  # Retrieve memory information in bytes
-  mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
-  mem_array=($mem_raw)
+# Retrieve memory information in bytes
+mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
+mem_array=($mem_raw)
 
-  mem_total_bytes=${mem_array[0]}
-  mem_used_bytes=${mem_array[1]}
-  mem_free_bytes=${mem_array[2]}
-  mem_avail_bytes=${mem_array[3]}
+mem_total_bytes=${mem_array[0]}
+mem_used_bytes=${mem_array[1]}
+mem_free_bytes=${mem_array[2]}
+mem_avail_bytes=${mem_array[3]}
 
-  # Convert bytes to gigabytes with two decimal places
-  mem_total_gb=$(echo "scale=2; $mem_total_bytes/1024/1024/1024" | bc -l)
-  mem_used_gb=$(echo "scale=2; $mem_used_bytes/1024/1024/1024" | bc -l)
-  mem_free_gb=$(echo "scale=2; $mem_free_bytes/1024/1024/1024" | bc -l)
-  mem_avail_gb=$(echo "scale=2; $mem_avail_bytes/1024/1024/1024" | bc -l)
+# Convert bytes to gigabytes with two decimal places
+mem_total_gb=$(awk "BEGIN {printf \"%.2f\", $mem_total_bytes / 1024 / 1024 / 1024}")
+mem_used_gb=$(awk "BEGIN {printf \"%.2f\", $mem_used_bytes / 1024 / 1024 / 1024}")
+mem_free_gb=$(awk "BEGIN {printf \"%.2f\", $mem_free_bytes / 1024 / 1024 / 1024}")
+mem_avail_gb=$(awk "BEGIN {printf \"%.2f\", $mem_avail_bytes / 1024 / 1024 / 1024}")
 
-  # Calculate available memory percentage with floating-point precision
-  avail_mem_percentage=$(echo "scale=2; 100 * $mem_avail_bytes / $mem_total_bytes" | bc)
+# Calculate available memory percentage with floating-point precision
+avail_mem_percentage=$(awk "BEGIN {printf \"%.2f\", 100 * $mem_avail_bytes / $mem_total_bytes}")
 
-  if (( $(echo "$avail_mem_percentage < 10" | bc -l) )); then
-    printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
-      "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
-  else
-    printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB\n" \
-      "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
-  fi
+# Determine if available memory is below 10%
+is_low_mem=$(awk "BEGIN {print ($avail_mem_percentage < 10)}")
 
-  echo
-  echo "$TITLE"
+if (( is_low_mem )); then
+  printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
+    "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
+else
+  printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB\n" \
+    "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
+fi
 
-  # Read user input with timeout
-  read -t "$INTERVAL" -n 1 -r key
-  if [[ $key == "q" || $key == "Q" ]]; then
-    echo -e "\nQuitting MySQL Monitor. Goodbye!"
-    break
-  fi
+echo
+echo "$TITLE"
+
+# Read user input with timeout
+read -t "$INTERVAL" -n 1 -r key
+if [[ $key == "q" || $key == "Q" ]]; then
+  echo -e "\nQuitting MySQL Monitor. Goodbye!"
+  break
+fi
 done
