@@ -17,7 +17,7 @@ done
 # Default refresh interval in seconds
 INTERVAL=10
 
-TITLE="MySQL Monitor v2025.01.24.2 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2025.01.25.1 (Press 'q' to exit)"
 
 # The extended-status variables
 MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
