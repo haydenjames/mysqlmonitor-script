@@ -6,6 +6,8 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
+TITLE="MySQL Monitor v2025.01.25.1 (Press 'q' to exit)"
+
 # Check for required tools
 for tool in mysqladmin awk bc; do
   if ! command -v "$tool" &> /dev/null; then
@@ -25,9 +27,6 @@ if [[ $# -ge 1 ]]; then
     echo "Invalid interval specified. Using default INTERVAL=$INTERVAL seconds."
   fi
 fi
-
-TITLE="MySQL Monitor v2025.01.25.2 (Press 'q' to exit)"
-
 
 # Function to retrieve MySQL extended status
 get_mysql_status() {
