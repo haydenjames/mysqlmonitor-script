@@ -17,17 +17,29 @@ done
 # Default refresh interval in seconds
 INTERVAL=10
 
-TITLE="MySQL Monitor v2025.01.25.1 (Press 'q' to exit)"
+# Check if the user provided an interval
+if [[ $# -ge 1 ]]; then
+  if [[ $1 =~ ^[0-9]+$ ]]; then
+    INTERVAL=$1
+  else
+    echo "Invalid interval specified. Using default INTERVAL=$INTERVAL seconds."
+  fi
+fi
 
-# The extended-status variables
-MYSQL_CMD='mysqladmin extended-status 2>/dev/null \
-  | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_pages_free|Innodb_buffer_pool_reads|Innodb_buffer_pool_read_requests|Innodb_buffer_pool_size|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_writes|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_open_cache_hits|Table_open_cache_misses|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
-  | grep -v "Aborted_connects_preauth" \
-  | grep -v "Max_used_connections_time" \
-  | grep -v "Uptime_since_flush_status"'
+TITLE="MySQL Monitor v2025.01.25.2 (Press 'q' to exit)"
+
+
+# Function to retrieve MySQL extended status
+get_mysql_status() {
+  mysqladmin extended-status 2>/dev/null \
+    | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_pages_free|Innodb_buffer_pool_reads|Innodb_buffer_pool_read_requests|Innodb_buffer_pool_size|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_writes|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_open_cache_hits|Table_open_cache_misses|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
+    | grep -v "Aborted_connects_preauth" \
+    | grep -v "Max_used_connections_time" \
+    | grep -v "Uptime_since_flush_status"
+}
 
 # Test if MySQL command requiring credentials succeeds
-if ! output=$(eval "$MYSQL_CMD" 2>&1); then
+if ! output=$(get_mysql_status 2>&1); then
   # Check for .my.cnf
   if [ ! -f ~/.my.cnf ]; then
     echo "It seems MySQL credentials are missing."
@@ -64,7 +76,7 @@ while true; do
   printf "%s\n" "---------------------"
 
   # Run the command and pipe into AWK
-  eval "$MYSQL_CMD" | awk '
+  get_mysql_status | awk '
     # Converts seconds to a human-readable "x d y h z m" etc.
     function prettyTime(sec) {
       years   = int(sec / 31536000); sec %= 31536000
@@ -353,4 +365,3 @@ if (tmp_disk_ratio != "") {
     break
   fi
 done
-
