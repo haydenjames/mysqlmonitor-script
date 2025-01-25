@@ -19,7 +19,7 @@ done
 # Default refresh interval in seconds
 INTERVAL=10
 
-# Check if the user provided an interval
+# Check if the user provided an interval. Foe example: "./mysqlmonitor.sh 2"
 if [[ $# -ge 1 ]]; then
   if [[ $1 =~ ^[0-9]+$ ]]; then
     INTERVAL=$1
