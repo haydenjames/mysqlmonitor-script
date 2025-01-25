@@ -200,7 +200,7 @@ while true; do
       if ("Innodb_buffer_pool_size" in data) {
         ibp_size_mb = data["Innodb_buffer_pool_size"] / (1024 * 1024)
       }
-      # Estimate free pages in MB, then we’ll do shortSizeMB on it
+      # Estimate free pages in MB
       ibp_free_mb = ""
       if ("Innodb_buffer_pool_pages_free" in data) {
         ibp_free_mb = data["Innodb_buffer_pool_pages_free"] * 16 / 1024
@@ -330,7 +330,7 @@ echo
 
 # Retrieve memory information in bytes
 mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
-mem_array=($mem_raw)
+read -r -a mem_array <<< "$mem_raw"
 
 mem_total_bytes=${mem_array[0]}
 mem_used_bytes=${mem_array[1]}
