@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2025.01.25.1 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2025.01.25.3 (Press 'q' to exit)"
 
 # Check for required tools
 for tool in mysqladmin awk; do
