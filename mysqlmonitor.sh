@@ -213,11 +213,11 @@ while true; do
         thread_cache_ratio = 100 * (1 - (data["Threads_created"] / data["Connections"]))
       }
 
-      # Table Cache Hit Ratio
-      table_cache_ratio = ""
-      if (("Opened_tables" in data) && ("Connections" in data) && (data["Connections"] > 0)) {
-        table_cache_ratio = 100 * (1 - (data["Opened_tables"] / data["Connections"]))
-      }
+	# Correct Table Cache Hit Ratio Calculation
+	table_cache_ratio = ""
+	if (("Table_open_cache_hits" in data) && ("Table_open_cache_misses" in data) && (data["Table_open_cache_hits"] + data["Table_open_cache_misses"] > 0)) {
+  	table_cache_ratio = 100 * (data["Table_open_cache_hits"] / (data["Table_open_cache_hits"] + data["Table_open_cache_misses"]))
+	}
 
       # InnoDB Buffer Pool Hit Ratio, clamped to 0% if negative
       ibp_efficiency = ""
