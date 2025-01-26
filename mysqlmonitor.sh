@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2025.01.25.3 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2025.01.26.1 (Press 'q' to exit)"
 
 # Check for required tools
 for tool in mysqladmin awk; do
@@ -65,12 +65,19 @@ if ! output=$(get_mysql_status 2>&1); then
   fi
 fi
 
-# Handle CTRL+C
-trap "echo -e '\nExiting MySQL Monitor. Goodbye!'; exit" SIGINT
+# Handle CTRL+C and restore cursor on exit
+trap "echo -e '\nExiting MySQL Monitor. Goodbye!'; tput cnorm; exit" SIGINT
+
+# Hide the cursor to reduce flicker
+tput civis
 
 while true; do
-  # Use tput to clear the screen more efficiently
-  tput clear
+  # Reposition the cursor to the top-left corner
+  tput cup 0 0
+
+  # Clear from cursor to end of screen to remove residual content
+  tput ed
+
   echo "MySQL Runtime Metrics"
   printf "%s\n" "---------------------"
 
@@ -224,11 +231,11 @@ while true; do
         thread_cache_ratio = 100 * (1 - (data["Threads_created"] / data["Connections"]))
       }
 
-	# Correct Table Cache Hit Ratio Calculation
-	table_cache_ratio = ""
-	if (("Table_open_cache_hits" in data) && ("Table_open_cache_misses" in data) && (data["Table_open_cache_hits"] + data["Table_open_cache_misses"] > 0)) {
-  	table_cache_ratio = 100 * (data["Table_open_cache_hits"] / (data["Table_open_cache_hits"] + data["Table_open_cache_misses"]))
-	}
+	  # Correct Table Cache Hit Ratio Calculation
+	  table_cache_ratio = ""
+	  if (("Table_open_cache_hits" in data) && ("Table_open_cache_misses" in data) && (data["Table_open_cache_hits"] + data["Table_open_cache_misses"] > 0)) {
+    	table_cache_ratio = 100 * (data["Table_open_cache_hits"] / (data["Table_open_cache_hits"] + data["Table_open_cache_misses"]))
+	  }
 
       # InnoDB Buffer Pool Hit Ratio, clamped to 0% if negative
       ibp_efficiency = ""
@@ -269,13 +276,13 @@ while true; do
         varName = keys[i]
         explanation = (varName in desc) ? desc[varName] : "No description available"
 
-	if (varName == "Uptime") {
-	    val = prettyTime(data[varName])  # Format Uptime
-	    # Append the note "(Wait 24h for accuracy)" to the varName
-	    printf "%-" col1_width "s | %s %s\n", varName " (Wait 24h for accuracy)", val, explanation
-	    # Skip further processing for Uptime
-	    continue
-	}
+		if (varName == "Uptime") {
+		    val = prettyTime(data[varName])  # Format Uptime
+		    # Append the note "(Wait 24h for accuracy)" to the varName
+		    printf "%-" col1_width "s | %s %s\n", varName " (Wait 24h for accuracy)", val, explanation
+		    # Skip further processing for Uptime
+		    continue
+		}
 
         val = formatNumber(data[varName])
 
@@ -325,45 +332,48 @@ if (tmp_disk_ratio != "") {
     }
   '
 
-# System Memory Section
-echo
+  # System Memory Section
+  echo
 
-# Retrieve memory information in bytes
-mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
-read -r -a mem_array <<< "$mem_raw"
+  # Retrieve memory information in bytes
+  mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
+  read -r -a mem_array <<< "$mem_raw"
 
-mem_total_bytes=${mem_array[0]}
-mem_used_bytes=${mem_array[1]}
-mem_free_bytes=${mem_array[2]}
-mem_avail_bytes=${mem_array[3]}
+  mem_total_bytes=${mem_array[0]}
+  mem_used_bytes=${mem_array[1]}
+  mem_free_bytes=${mem_array[2]}
+  mem_avail_bytes=${mem_array[3]}
 
-# Convert bytes to gigabytes with two decimal places
-mem_total_gb=$(awk "BEGIN {printf \"%.2f\", $mem_total_bytes / 1024 / 1024 / 1024}")
-mem_used_gb=$(awk "BEGIN {printf \"%.2f\", $mem_used_bytes / 1024 / 1024 / 1024}")
-mem_free_gb=$(awk "BEGIN {printf \"%.2f\", $mem_free_bytes / 1024 / 1024 / 1024}")
-mem_avail_gb=$(awk "BEGIN {printf \"%.2f\", $mem_avail_bytes / 1024 / 1024 / 1024}")
+  # Convert bytes to gigabytes with two decimal places
+  mem_total_gb=$(awk "BEGIN {printf \"%.2f\", $mem_total_bytes / 1024 / 1024 / 1024}")
+  mem_used_gb=$(awk "BEGIN {printf \"%.2f\", $mem_used_bytes / 1024 / 1024 / 1024}")
+  mem_free_gb=$(awk "BEGIN {printf \"%.2f\", $mem_free_bytes / 1024 / 1024 / 1024}")
+  mem_avail_gb=$(awk "BEGIN {printf \"%.2f\", $mem_avail_bytes / 1024 / 1024 / 1024}")
 
-# Calculate available memory percentage with floating-point precision
-avail_mem_percentage=$(awk "BEGIN {printf \"%.2f\", 100 * $mem_avail_bytes / $mem_total_bytes}")
+  # Calculate available memory percentage with floating-point precision
+  avail_mem_percentage=$(awk "BEGIN {printf \"%.2f\", 100 * $mem_avail_bytes / $mem_total_bytes}")
 
-# Determine if available memory is below 10%
-is_low_mem=$(awk "BEGIN {print ($avail_mem_percentage < 10)}")
+  # Determine if available memory is below 10%
+  is_low_mem=$(awk "BEGIN {print ($avail_mem_percentage < 10)}")
 
-if (( is_low_mem )); then
-  printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
-    "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
-else
-  printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB\n" \
-    "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
-fi
+  if (( is_low_mem )); then
+    printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
+      "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
+  else
+    printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB\n" \
+      "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
+  fi
 
-echo
-echo "$TITLE"
+  echo
+  echo "$TITLE"
 
-# Read user input with timeout
-read -t "$INTERVAL" -n 1 -r key
-if [[ $key == "q" || $key == "Q" ]]; then
-  echo -e "\nQuitting MySQL Monitor. Goodbye!"
-  break
-fi
+  # Read user input with timeout
+  read -t "$INTERVAL" -n 1 -r key
+  if [[ $key == "q" || $key == "Q" ]]; then
+    echo -e "\nQuitting MySQL Monitor. Goodbye!"
+    break
+  fi
 done
+
+# Restore the cursor before exiting (in case loop is exited without SIGINT)
+tput cnorm
