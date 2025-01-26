@@ -37,17 +37,6 @@ chmod +x mysqlmonitor.sh && \
 ## Complementary Guide 
 Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblog.io/mysql-monitor-script/) - This blog post provides detailed guidance on the variables used in the script, along with links to common MySQL tuning pitfalls and tips to help you optimize your database performance.
 
-## Changelog
-
-### v2025.01.23
-Check for required tools (mysqladmin, awk and bc) at the start of the script. Prompt user of any dependencies. 
-
-### v2025.01.22
-First check for working MySQL connection. If credentials are required prompt the user to setup using .my.cnf.
-
-### v2025.01.21
-Reduced width of output for smaller screens.
-
 ## TO DO
 
 ### Add a Help screen
