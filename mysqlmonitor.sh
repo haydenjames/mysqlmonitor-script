@@ -66,23 +66,24 @@ if ! output=$(get_mysql_status 2>&1); then
 fi
 
 # Handle CTRL+C and restore cursor on exit
-trap "echo -e '\nExiting MySQL Monitor. Goodbye!'; tput cnorm; exit" SIGINT
+trap "echo -e '\nExiting MySQL Monitor. Goodbye!'; printf '\033[?25h'; exit" SIGINT
 
 # Hide the cursor to reduce flicker
-tput civis
+printf '\033[?25l'
+
+# Clear the screen once before starting the loop
+printf "\033[H\033[J"
 
 while true; do
-  # Reposition the cursor to the top-left corner
-  tput cup 0 0
+  # Initialize an empty variable to hold all output
+  output=""
 
-  # Clear from cursor to end of screen to remove residual content
-  tput ed
+  # Add MySQL Runtime Metrics header
+  output+=$'MySQL Runtime Metrics\n'
+  output+=$'---------------------\n'
 
-  echo "MySQL Runtime Metrics"
-  printf "%s\n" "---------------------"
-
-  # Run the command and pipe into AWK
-  get_mysql_status | awk '
+  # Capture MySQL status and append to output
+  mysql_data=$(get_mysql_status | awk '
     # Converts seconds to a human-readable "x d y h z m" etc.
     function prettyTime(sec) {
       years   = int(sec / 31536000); sec %= 31536000
@@ -231,11 +232,11 @@ while true; do
         thread_cache_ratio = 100 * (1 - (data["Threads_created"] / data["Connections"]))
       }
 
-	  # Correct Table Cache Hit Ratio Calculation
-	  table_cache_ratio = ""
-	  if (("Table_open_cache_hits" in data) && ("Table_open_cache_misses" in data) && (data["Table_open_cache_hits"] + data["Table_open_cache_misses"] > 0)) {
-    	table_cache_ratio = 100 * (data["Table_open_cache_hits"] / (data["Table_open_cache_hits"] + data["Table_open_cache_misses"]))
-	  }
+      # Correct Table Cache Hit Ratio Calculation
+      table_cache_ratio = ""
+      if (("Table_open_cache_hits" in data) && ("Table_open_cache_misses" in data) && (data["Table_open_cache_hits"] + data["Table_open_cache_misses"] > 0)) {
+        table_cache_ratio = 100 * (data["Table_open_cache_hits"] / (data["Table_open_cache_hits"] + data["Table_open_cache_misses"]))
+      }
 
       # InnoDB Buffer Pool Hit Ratio, clamped to 0% if negative
       ibp_efficiency = ""
@@ -271,71 +272,74 @@ while true; do
       col2_width = (col2_width > 10 ? col2_width : 10)
       col3_width = (col3_width > 25 ? col3_width : 25)
 
+      # Initialize output within AWK
+      output = ""
+
       # Print the data with adjusted widths
       for (i=1; i<=count; i++) {
         varName = keys[i]
         explanation = (varName in desc) ? desc[varName] : "No description available"
 
-		if (varName == "Uptime") {
-		    val = prettyTime(data[varName])  # Format Uptime
-		    # Append the note "(Wait 24h for accuracy)" to the varName
-		    printf "%-" col1_width "s | %s %s\n", varName " (Wait 24h for accuracy)", val, explanation
-		    # Skip further processing for Uptime
-		    continue
-		}
+        if (varName == "Uptime") {
+          val = prettyTime(data[varName])  # Format Uptime
+          # Append the note "(Wait 24h for accuracy)" to the varName
+          output = output sprintf("%-" col1_width "s | %s %s\n", varName " (Wait 24h for accuracy)", val, explanation)
+          # Skip further processing for Uptime
+          continue
+        }
 
         val = formatNumber(data[varName])
 
         # Highlight specific values if needed
         if (varName == "Innodb_buffer_pool_pages_free" && data[varName] == 0) {
-          printf "\033[0;31m%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\033[0m\n", varName, val, explanation
+          output = output sprintf("\033[0;31m%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\033[0m\n", varName, val, explanation)
         } else {
-          printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", varName, val, explanation
+          output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", varName, val, explanation)
         }
       }
 
-# Additional Metrics section
-print ""
-print "MySQL Health Metrics"
-printf "%-" col1_width "s  %-" col2_width "s  %-" col3_width "s\n", "--------------------", "", ""
+      # Additional Metrics section
+      output = output sprintf("\nMySQL Health Metrics\n")
+      output = output sprintf("--------------------\n")
 
-if (qps != "") {
-  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
-    "Queries per Second", sprintf("%.2f QPS", qps), desc["Queries per Second"]
-}
+      if (qps != "") {
+        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+          "Queries per Second", sprintf("%.2f QPS", qps), desc["Queries per Second"])
+      }
 
-if (ibp_free_mb != "") {
-  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
-    "InnoDB Buffer Pool Free", shortSizeMB(ibp_free_mb), desc["InnoDB Buffer Pool Free"]
-}
+      if (ibp_free_mb != "") {
+        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+          "InnoDB Buffer Pool Free", shortSizeMB(ibp_free_mb), desc["InnoDB Buffer Pool Free"])
+      }
 
-if (ibp_efficiency != "") {
-  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
-    "InnoDB Buffer Pool Hit Ratio", sprintf("%.1f%%", ibp_efficiency), desc["InnoDB Buffer Pool Hit Ratio"]
-}
+      if (ibp_efficiency != "") {
+        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+          "InnoDB Buffer Pool Hit Ratio", sprintf("%.1f%%", ibp_efficiency), desc["InnoDB Buffer Pool Hit Ratio"])
+      }
 
-if (thread_cache_ratio != "") {
-  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
-    "Thread Cache Hit Ratio", sprintf("%.1f%%", thread_cache_ratio), desc["Thread Cache Hit Ratio"]
-}
+      if (thread_cache_ratio != "") {
+        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+          "Thread Cache Hit Ratio", sprintf("%.1f%%", thread_cache_ratio), desc["Thread Cache Hit Ratio"])
+      }
 
-if (table_cache_ratio != "") {
-  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
-    "Table Cache Hit Ratio", sprintf("%.1f%%", table_cache_ratio), desc["Table Cache Hit Ratio"]
-}
+      if (table_cache_ratio != "") {
+        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+          "Table Cache Hit Ratio", sprintf("%.1f%%", table_cache_ratio), desc["Table Cache Hit Ratio"])
+      }
 
-if (tmp_disk_ratio != "") {
-  printf "%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
-    "Temp tables created on disk", sprintf("%.1f%%", tmp_disk_ratio), desc["Temp tables created on disk"]
-}
+      if (tmp_disk_ratio != "") {
+        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+          "Temp tables created on disk", sprintf("%.1f%%", tmp_disk_ratio), desc["Temp tables created on disk"])
+      }
 
+      print output
     }
-  '
+  ')
+
+  # Append newline
+  output+="${mysql_data}"$'\n'
 
   # System Memory Section
-  echo
-
-  # Retrieve memory information in bytes
   mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
   read -r -a mem_array <<< "$mem_raw"
 
@@ -357,15 +361,18 @@ if (tmp_disk_ratio != "") {
   is_low_mem=$(awk "BEGIN {print ($avail_mem_percentage < 10)}")
 
   if (( is_low_mem )); then
-    printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m\n" \
-      "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
+    mem_info="Total Memory: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m"
   else
-    printf "Total Memory: %s GB, Used: %s GB, Free: %s GB, Available: %s GB\n" \
-      "$mem_total_gb" "$mem_used_gb" "$mem_free_gb" "$mem_avail_gb"
+    mem_info="Total Memory: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB"
   fi
+  # Append mem_info with an empty line before it
+  output+=$'\n'"${mem_info}"$'\n\n'
 
-  echo
-  echo "$TITLE"
+  # Add title followed by a newline
+  output+="${TITLE}"$'\n'
+
+  # Move cursor to top-left and print all output at once
+  printf "\033[H%s" "$output"
 
   # Read user input with timeout
   read -t "$INTERVAL" -n 1 -r key
@@ -376,4 +383,4 @@ if (tmp_disk_ratio != "") {
 done
 
 # Restore the cursor before exiting (in case loop is exited without SIGINT)
-tput cnorm
+printf '\033[?25h'
