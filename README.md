@@ -40,7 +40,8 @@ Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblo
 ## Known bugs
 
 ### Fix output when screensize is too small. 
-When the terminal window's height is smaller than the number of lines the script attempts to display, the terminal starts scrolling. This results in repetitive or overlapping content, making the output unreadable.
+When the terminal window's height is smaller than the number of lines the script attempts to display, the terminal starts scrolling. This results in repetitive or overlapping content, making the output unreadable. 
+In the meantime, I've added a check for terminal size. The minimum is 95×55.
 
 ## TO DO
 
