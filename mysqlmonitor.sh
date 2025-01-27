@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="------------------------------- MySQL Monitor v2025.01.27.7 (Press 'q' to exit) -----"
+TITLE="------------------------------- MySQL Monitor (Press 'q' to exit) -------------------"
 
 # Define minimum terminal size requirements
 MIN_COLS=88   # Minimum number of columns
