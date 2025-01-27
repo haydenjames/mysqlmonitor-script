@@ -6,11 +6,11 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2025.01.27.3 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2025.01.27.4 (Press 'q' to exit)"
 
 # Define minimum terminal size requirements
-MIN_COLS=95   # Minimum number of columns
-MIN_ROWS=55    # Minimum number of rows
+MIN_COLS=90   # Minimum number of columns
+MIN_ROWS=55   # Minimum number of rows
 
 # Check for required tools
 for tool in mysqladmin awk; do
