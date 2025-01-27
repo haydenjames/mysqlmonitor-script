@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="------------------------------- MySQL Monitor v2025.01.27.6 (Press 'q' to exit)"
+TITLE="------------------------------- MySQL Monitor v2025.01.27.7 (Press 'q' to exit) -----"
 
 # Define minimum terminal size requirements
 MIN_COLS=88   # Minimum number of columns
@@ -113,7 +113,7 @@ while true; do
   output=""
 
   # Add MySQL Runtime Metrics header
-  output+=$'------------------------------- MySQL Runtime Metrics\n'
+  output+=$'------------------------------- MySQL Runtime Metrics -------------------------------\n'
 
   # Capture MySQL status and append to output
   mysql_data=$(get_mysql_status | awk '
@@ -340,7 +340,7 @@ while true; do
       }
 
       # Additional Metrics section
-      output = output sprintf("\n------------------------------- MySQL Health Metrics\n")
+      output = output sprintf("------------------------------- MySQL Health Metrics --------------------------------\n")
 
       # Moved Queries per Second
       # Removed the following block to eliminate the separate "Queries per Second" line
@@ -379,7 +379,7 @@ while true; do
   ')
 
   # Append newline
-  output+="${mysql_data}"$'\n'
+  output+="${mysql_data}"$'\n------------------------------- System Memory ---------------------------------------'
 
   # System Memory Section
   mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
@@ -403,12 +403,12 @@ while true; do
   is_low_mem=$(awk "BEGIN {print ($avail_mem_percentage < 10)}")
 
   if (( is_low_mem )); then
-    mem_info="System Memory: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m"
+    mem_info="${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m"
   else
-    mem_info="System Memory: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB"
+    mem_info="${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB"
   fi
   # Append mem_info with an empty line before it
-  output+=$'\n'"${mem_info}"$'\n\n'
+  output+=$'\n'"${mem_info}"$'\n'
 
   # Add title followed by a newline
   output+="${TITLE}"$'\n'
