@@ -403,9 +403,9 @@ while true; do
   is_low_mem=$(awk "BEGIN {print ($avail_mem_percentage < 10)}")
 
   if (( is_low_mem )); then
-    mem_info="Total ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m"
+    mem_info="Total: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m"
   else
-    mem_info="Total ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB"
+    mem_info="Total: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB"
   fi
   # Append mem_info with an empty line before it
   output+=$'\n'"${mem_info}"$'\n'
