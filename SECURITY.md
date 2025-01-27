@@ -6,13 +6,12 @@ The following table outlines the versions of `mysqlmonitor-script` that are curr
 
 | Version     | Supported          |
 | ----------- | ------------------ |
-| 2025.01.x   | :white_check_mark: |
-| 2024.x      | :x:                |
-| < 2024.x    | :x:                |
+| > 2025.01.25.x   | :white_check_mark: |
+| < 2025.01.24.x    | :x:                |
 
 ## Reporting a Vulnerability
 
-If you discover a vulnerability in the `mysqlmonitor-script`, please report it to us promptly. Your report will help improve the security and reliability of this project for all users.
+If you discover a vulnerability in the `mysqlmonitor-script`, please report it to me promptly. Your report will help improve the security and reliability of this project for all users.
 
 ### How to Report:
 - Email: [security@haydenjames.io](mailto:security@haydenjames.io)
