@@ -6,7 +6,11 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2025.01.27.2 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2025.01.27.3 (Press 'q' to exit)"
+
+# Define minimum terminal size requirements
+MIN_COLS=95   # Minimum number of columns
+MIN_ROWS=55    # Minimum number of rows
 
 # Check for required tools
 for tool in mysqladmin awk; do
@@ -75,6 +79,36 @@ printf '\033[?25l'
 printf "\033[H\033[J"
 
 while true; do
+  # ====== Added Code Start: Check Terminal Size ======
+  # Retrieve current terminal size
+  read rows cols <<< $(stty size)
+  
+  # Check if terminal size is below minimum requirements
+  if [[ $rows -lt $MIN_ROWS || $cols -lt $MIN_COLS ]]; then
+    # Clear the screen
+    printf "\033[H\033[J"
+    
+    # Define warning message
+    WARNING_MSG="❗ Terminal size too small. Please resize the window to at least ${MIN_COLS} columns and ${MIN_ROWS} rows. ❗"
+    
+    # Calculate the position to center the message
+    msg_length=${#WARNING_MSG}
+    msg_row=$((rows / 2))
+    msg_col=$(((cols - msg_length) / 2))
+    
+    # Ensure message does not go negative
+    if [[ $msg_col -lt 0 ]]; then
+      msg_col=0
+    fi
+    
+    # Move cursor to the calculated position and print the message
+    printf "\033[${msg_row};${msg_col}H\033[1;31m%s\033[0m\n" "$WARNING_MSG"  # Bold red text
+    
+    # Skip the rest of the loop iteration
+    continue
+  fi
+  # ====== Added Code End: Check Terminal Size ======
+
   # Initialize an empty variable to hold all output
   output=""
 
