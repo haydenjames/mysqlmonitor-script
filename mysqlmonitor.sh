@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2025.01.27.5 (Press 'q' to exit)"
+TITLE="------------------------------- MySQL Monitor v2025.01.27.5 (Press 'q' to exit)"
 
 # Define minimum terminal size requirements
 MIN_COLS=90   # Minimum number of columns
@@ -403,9 +403,9 @@ while true; do
   is_low_mem=$(awk "BEGIN {print ($avail_mem_percentage < 10)}")
 
   if (( is_low_mem )); then
-    mem_info="Total Memory: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m"
+    mem_info="System Memory: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m"
   else
-    mem_info="Total Memory: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB"
+    mem_info="System Memory: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB"
   fi
   # Append mem_info with an empty line before it
   output+=$'\n'"${mem_info}"$'\n\n'
