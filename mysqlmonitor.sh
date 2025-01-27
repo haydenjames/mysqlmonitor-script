@@ -9,8 +9,8 @@
 TITLE="------------------------------- MySQL Monitor v2025.01.27.5 (Press 'q' to exit)"
 
 # Define minimum terminal size requirements
-MIN_COLS=90   # Minimum number of columns
-MIN_ROWS=55   # Minimum number of rows
+MIN_COLS=88   # Minimum number of columns
+MIN_ROWS=50   # Minimum number of rows
 
 # Check for required tools
 for tool in mysqladmin awk; do
