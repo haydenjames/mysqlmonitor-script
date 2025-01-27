@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2025.01.27.4 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2025.01.27.5 (Press 'q' to exit)"
 
 # Define minimum terminal size requirements
 MIN_COLS=90   # Minimum number of columns
@@ -113,8 +113,7 @@ while true; do
   output=""
 
   # Add MySQL Runtime Metrics header
-  output+=$'MySQL Runtime Metrics\n'
-  output+=$'---------------------\n'
+  output+=$'------------------------------- MySQL Runtime Metrics\n'
 
   # Capture MySQL status and append to output
   mysql_data=$(get_mysql_status | awk '
@@ -205,7 +204,8 @@ while true; do
       desc["Uptime"]                           = ""
 
       # Additional Metrics descriptions
-      desc["Queries per Second"]               = "Should match traffic/app changes."
+      # Moved "Queries per Second"
+      # desc["Queries per Second"]               = "Should match traffic/app changes."
       desc["InnoDB Buffer Pool Free"]          = "Zero/low? = innodb_buffer_pool_size."
       desc["InnoDB Buffer Pool Hit Ratio"]     = "High QPS? Aim for high hit ratio."
       desc["Thread Cache Hit Ratio"]           = "Faster connection handling. > 90%."
@@ -213,12 +213,13 @@ while true; do
       desc["Temp tables created on disk"]      = "Keep this low! Disk I/O is slow."
 
       # Define additional metrics labels
-      additional_labels[1] = "Queries per Second"
-      additional_labels[2] = "InnoDB Buffer Pool Free"
-      additional_labels[3] = "InnoDB Buffer Pool Hit Ratio"
-      additional_labels[4] = "Thread Cache Hit Ratio"
-      additional_labels[5] = "Table Cache Hit Ratio"
-      additional_labels[6] = "Temp tables created on disk"
+      # Removed "Queries per Second" from additional_labels
+      # additional_labels[1] = "Queries per Second"
+      additional_labels[1] = "InnoDB Buffer Pool Free"
+      additional_labels[2] = "InnoDB Buffer Pool Hit Ratio"
+      additional_labels[3] = "Thread Cache Hit Ratio"
+      additional_labels[4] = "Table Cache Hit Ratio"
+      additional_labels[5] = "Temp tables created on disk"
     }
 
     {
@@ -324,6 +325,12 @@ while true; do
 
         val = formatNumber(data[varName])
 
+        # New: Append QPS to "Questions"
+        if (varName == "Questions" && qps != "") {
+          qps_formatted = sprintf("(%.2f QPS)", qps)
+          varName = varName " " qps_formatted
+        }
+
         # Highlight specific values if needed
         if (varName == "Innodb_buffer_pool_pages_free" && data[varName] == 0) {
           output = output sprintf("\033[0;31m%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\033[0m\n", varName, val, explanation)
@@ -333,13 +340,14 @@ while true; do
       }
 
       # Additional Metrics section
-      output = output sprintf("\nMySQL Health Metrics\n")
-      output = output sprintf("--------------------\n")
+      output = output sprintf("\n------------------------------- MySQL Health Metrics\n")
 
-      if (qps != "") {
-        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
-          "Queries per Second", sprintf("%.2f QPS", qps), desc["Queries per Second"])
-      }
+      # Moved Queries per Second
+      # Removed the following block to eliminate the separate "Queries per Second" line
+      # if (qps != "") {
+      #   output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
+      #     "Queries per Second", sprintf("%.2f QPS", qps), desc["Queries per Second"])
+      # }
 
       if (ibp_free_mb != "") {
         output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n", \
