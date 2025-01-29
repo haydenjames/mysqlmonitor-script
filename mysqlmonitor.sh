@@ -9,8 +9,8 @@
 TITLE="------------------------------- MySQL Monitor (Press 'q' to exit) -------------------"
 
 # Define minimum terminal size requirements
-MIN_COLS=88   # Minimum number of columns
-MIN_ROWS=50   # Minimum number of rows
+MIN_COLS=50   # Minimum number of columns
+MIN_ROWS=45   # Minimum number of rows
 
 # Check for required tools
 for tool in mysqladmin awk; do
@@ -73,8 +73,10 @@ tput smcup 2>/dev/null || true
 
 # Handle CTRL+C and other term signals to restore screen and cursor before exit.
 cleanup() {
-  printf '\033[?25h'     # Show the cursor
-  tput rmcup 2>/dev/null || true
+  # Re-enable line wrapping
+  printf "\033[?7h"
+  printf '\033[?25h'
+ tput rmcup 2>/dev/null || true
   echo -e "\nExiting MySQL Monitor. Goodbye!"
   exit
 }
@@ -86,6 +88,10 @@ printf '\033[?25l'
 
 # Clear the screen once before starting the loop
 printf "\033[H\033[J"
+
+# ---------------- NEW: Disable wrapping here ----------------
+printf "\033[?7l"
+# -----------------------------------------------------------
 
 while true; do
 
