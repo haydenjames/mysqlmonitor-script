@@ -21,7 +21,7 @@ for tool in mysqladmin awk; do
 done
 
 # Default refresh interval in seconds
-INTERVAL=10
+INTERVAL=5
 
 # Check if the user provided an interval
 if [[ $# -ge 1 ]]; then
