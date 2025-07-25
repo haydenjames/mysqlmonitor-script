@@ -69,19 +69,19 @@ if ! output=$(get_mysql_status 2>&1); then
   fi
 fi
 
-tput smcup 2>/dev/null || true
-
 # Handle CTRL+C and other term signals to restore screen and cursor before exit.
 cleanup() {
   # Re-enable line wrapping
   printf "\033[?7h"
   printf '\033[?25h'
- tput rmcup 2>/dev/null || true
+  tput rmcup 2>/dev/null || true
   echo -e "\nExiting MySQL Monitor. Goodbye!"
   exit
 }
 
-trap cleanup SIGINT SIGTERM
+trap cleanup SIGINT SIGTERM EXIT
+
+tput smcup 2>/dev/null || true
 
 # Hide the cursor to reduce flicker
 printf '\033[?25l'
