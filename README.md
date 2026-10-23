@@ -37,11 +37,11 @@ chmod +x mysqlmonitor.sh && \
 ## Complementary Guide 
 Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblog.io/mysql-monitor-script/) - This blog post provides detailed guidance on the variables used in the script, along with links to common MySQL tuning pitfalls and tips to help you optimize your database performance.
 
-## Known bugs
+## Requirements
+`bash`, `mysqladmin` and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.
 
-### Fix output when screensize is too small. 
-When the terminal window's height is smaller than the number of lines the script attempts to display, the terminal starts scrolling. This results in repetitive or overlapping content, making the output unreadable. 
-In the meantime, I've added a check for minimum terminal size. The minimum is 50×45.
+## Terminal size
+The screen is redrawn in place, so it no longer scrolls or flickers. If the window is too small to fit everything, the script tells you the size it needs and redraws as soon as you resize.
 
 ## TO DO
 

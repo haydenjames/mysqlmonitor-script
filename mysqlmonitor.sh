@@ -6,14 +6,13 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="---------------- MySQL Monitor v2025.07.29.02 (Press 'q' to exit) -------------------"
+TITLE="MySQL Monitor v2026.10.23.01 (Press 'q' to exit)"
 
-# Define minimum terminal size requirements
-MIN_COLS=50   # Minimum number of columns
-MIN_ROWS=45   # Minimum number of rows
+# Define minimum terminal width. The required height is measured from the frame itself.
+MIN_COLS=50
 
 # Check for required tools
-for tool in mysqladmin awk; do
+for tool in mysqladmin awk stty; do
   if ! command -v "$tool" &> /dev/null; then
     echo "Error: $tool is not installed. Please install it and try again."
     exit 1
@@ -25,24 +24,15 @@ INTERVAL=5
 
 # Check if the user provided an interval
 if [[ $# -ge 1 ]]; then
-  if [[ $1 =~ ^[0-9]+$ ]]; then
+  if [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 )); then
     INTERVAL=$1
   else
     echo "Invalid interval specified. Using default INTERVAL=$INTERVAL seconds."
   fi
 fi
 
-# Function to retrieve MySQL extended status
-get_mysql_status() {
-  mysqladmin extended-status 2>/dev/null \
-    | grep -E "Aborted_clients|Aborted_connects|Connections|Created_tmp_disk_tables|Created_tmp_files|Created_tmp_tables|Innodb_buffer_pool_pages_free|Innodb_buffer_pool_reads|Innodb_buffer_pool_read_requests|Innodb_buffer_pool_size|Innodb_buffer_pool_wait_free|Innodb_buffer_pool_write_requests|Innodb_data_reads|Innodb_data_writes|Innodb_log_waits|Innodb_log_writes|Key_reads|Key_writes|Max_used_connections|Open_files|Open_tables|Opened_tables|Questions|Select_full_join|Select_scan|Slow_queries|Sort_merge_passes|Sort_range|Sort_rows|Sort_scan|Table_open_cache_hits|Table_open_cache_misses|Table_locks_immediate|Table_locks_waited|Threads_cached|Threads_connected|Threads_created|Threads_running|Uptime" \
-    | grep -v "Aborted_connects_preauth" \
-    | grep -v "Max_used_connections_time" \
-    | grep -v "Uptime_since_flush_status"
-}
-
 # Test if MySQL command requiring credentials succeeds
-if ! output=$(get_mysql_status 2>&1); then
+if ! output=$(mysqladmin status 2>&1); then
   # Check for .my.cnf
   if [ ! -f ~/.my.cnf ]; then
     echo "It seems MySQL credentials are missing."
@@ -55,9 +45,9 @@ if ! output=$(get_mysql_status 2>&1); then
     echo "Ensure the file permissions are secure: chmod 600 ~/.my.cnf"
     exit 1
   else
-    # Check file permissions
+    # Check file permissions: group/other must have no access
     file_perm=$(stat -c "%a" ~/.my.cnf)
-    if [ "$file_perm" -ne 600 ]; then
+    if (( 8#$file_perm & 8#077 )); then
       echo "Error: ~/.my.cnf permissions are $file_perm. Please set them to 600 using 'chmod 600 ~/.my.cnf'."
       exit 1
     fi
@@ -69,333 +59,417 @@ if ! output=$(get_mysql_status 2>&1); then
   fi
 fi
 
-# Handle CTRL+C and other term signals to restore screen and cursor before exit.
-cleanup() {
-  # Re-enable line wrapping
-  printf "\033[?7h"
-  printf '\033[?25h'
-  tput rmcup 2>/dev/null || true
-  echo -e "\nExiting MySQL Monitor. Goodbye!"
-  exit
+# Current time in microseconds (EPOCHREALTIME needs bash 5; fall back to whole seconds).
+now_us() {
+  if [[ -n $EPOCHREALTIME ]]; then
+    REPLY=${EPOCHREALTIME//[!0-9]/}
+  else
+    REPLY=$(( SECONDS * 1000000 ))
+  fi
 }
 
-trap cleanup SIGINT SIGTERM EXIT
+# Renders one frame from a single input stream made of marked sections:
+#   @@TIME (now, µs)  @@PREV (state from the previous frame)  @@CUR (mysqladmin output)
+#   @@MEMINFO (/proc/meminfo)  @@CPU (/proc/stat cpu line)  @@LOAD (/proc/loadavg)
+# Prints the frame, then "@@STATE" followed by the state to feed back in next time.
+# Written for POSIX awk: works with gawk, mawk and busybox awk.
+read -r -d '' RENDER_AWK <<'AWK'
+function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+
+function prettyTime(sec,    years, months, days, hours, minutes, seconds, out) {
+  years   = int(sec / 31536000); sec %= 31536000
+  months  = int(sec / 2592000);  sec %= 2592000
+  days    = int(sec / 86400);    sec %= 86400
+  hours   = int(sec / 3600);     sec %= 3600
+  minutes = int(sec / 60)
+  seconds = sec % 60
+
+  out = ""
+  if (years   > 0) out = out years   "y "
+  if (months  > 0) out = out months  "mo "
+  if (days    > 0) out = out days    "d "
+  if (hours   > 0) out = out hours   "h "
+  if (minutes > 0) out = out minutes "m "
+  if (seconds > 0) out = out seconds "s"
+  return (out == "") ? "0s" : trim(out)
+}
+
+# Converts large numbers into user-friendly formats (K, M, B, T)
+function formatNumber(num) {
+  if (num >= 1e12) return sprintf("%.2fT", num / 1e12)
+  if (num >= 1e9)  return sprintf("%.2fB", num / 1e9)
+  if (num >= 1e6)  return sprintf("%.2fM", num / 1e6)
+  if (num >= 1e3)  return sprintf("%.2fK", num / 1e3)
+  return sprintf("%.0f", num)
+}
+
+function formatRate(r) {
+  if (r == "") return "-"
+  if (r >= 1000) return formatNumber(r)
+  if (r >= 10)   return sprintf("%.1f", r)
+  return sprintf("%.2f", r)
+}
+
+function formatBytes(b) {
+  if (b >= 1073741824) return sprintf("%.1f GB", b / 1073741824)
+  return sprintf("%.0f MB", b / 1048576)
+}
+
+function pct(x) { return (x == "") ? "-" : sprintf("%.1f%%", x) }
+function pct2(x) { return (x == "") ? "-" : sprintf("%.2f%%", x) }
+
+# Per-second change of a counter since the previous frame ("" when unknown).
+function rate(name,    d) {
+  if (!have_prev || !(name in cur) || !(name in prev)) return ""
+  d = cur[name] - prev[name]
+  return (d < 0) ? "" : d / elapsed
+}
+
+function delta(name) { return cur[name] - prev[name] }
+
+function addRow(name, val, extra, expl, color) {
+  nrows++
+  rkind[nrows] = "row"; rname[nrows] = name; rval[nrows] = val
+  rextra[nrows] = extra; rdesc[nrows] = expl; rcolor[nrows] = color
+  if (length(name)  > w1) w1 = length(name)
+  if (length(val)   > w2) w2 = length(val)
+  if (length(extra) > w3) w3 = length(extra)
+  if (length(expl)  > w4) w4 = length(expl)
+}
+
+# A row whose value runs to the end of the line instead of sitting in the value column.
+function addSpanRow(name, val) {
+  nrows++; rkind[nrows] = "span"; rname[nrows] = name; rval[nrows] = val
+  if (length(name) > w1) w1 = length(name)
+}
+
+function addHeader(title) { nrows++; rkind[nrows] = "hdr"; rname[nrows] = title }
+
+function addLine(text, color) { nrows++; rkind[nrows] = "line"; rname[nrows] = text; rcolor[nrows] = color }
+
+function rule(title, width,    left, right, s, i) {
+  title = " " title " "
+  left = int((width - length(title)) / 2)
+  right = width - length(title) - left
+  s = ""
+  for (i = 0; i < left; i++) s = s "-"
+  s = s title
+  for (i = 0; i < right; i++) s = s "-"
+  return s
+}
+
+BEGIN {
+  RED = "\033[0;31m"; RESET = "\033[0m"
+
+  # Display order, and which metrics are point-in-time gauges (no per-second rate)
+  nm = split("Aborted_clients Aborted_connects Connections Created_tmp_disk_tables " \
+             "Created_tmp_files Created_tmp_tables Innodb_buffer_pool_pages_free " \
+             "Innodb_buffer_pool_read_requests Innodb_buffer_pool_reads " \
+             "Innodb_buffer_pool_wait_free Innodb_buffer_pool_write_requests " \
+             "Innodb_data_reads Innodb_data_writes Innodb_log_waits Innodb_log_writes " \
+             "Key_reads Key_writes Max_used_connections Open_files Open_tables " \
+             "Opened_tables Questions Select_full_join Select_scan Slow_queries " \
+             "Sort_merge_passes Sort_range Sort_rows Sort_scan Table_locks_immediate " \
+             "Table_locks_waited Table_open_cache_hits Table_open_cache_misses " \
+             "Threads_cached Threads_connected Threads_created Threads_running Uptime", metrics, " ")
+  for (i = 1; i <= nm; i++) wanted[metrics[i]] = 1
+  wanted["Innodb_buffer_pool_pages_total"] = 1
+
+  split("Innodb_buffer_pool_pages_free Max_used_connections Open_files Open_tables " \
+        "Threads_cached Threads_connected Threads_running Uptime", g, " ")
+  for (i in g) gauge[g[i]] = 1
+
+  split("innodb_buffer_pool_size innodb_page_size max_connections table_open_cache", v, " ")
+  for (i in v) wanted_var[v[i]] = 1
+
+  desc["Aborted_clients"]                  = "Failed client connections."
+  desc["Aborted_connects"]                 = "Failed MySQL server connections."
+  desc["Connections"]                      = "Total connection attempts."
+  desc["Created_tmp_disk_tables"]          = "Temp tables created on disk."
+  desc["Created_tmp_files"]                = "Temp files created by MySQL."
+  desc["Created_tmp_tables"]               = "Temp tables created in memory."
+  desc["Innodb_buffer_pool_pages_free"]    = "Free pages in InnoDB buffer pool."
+  desc["Innodb_buffer_pool_reads"]         = "Reads that missed the pool (disk)."
+  desc["Innodb_buffer_pool_read_requests"] = "Logical read requests to buffer."
+  desc["Innodb_buffer_pool_wait_free"]     = "Waits for free pages."
+  desc["Innodb_buffer_pool_write_requests"]= "Writes requested to InnoDB buffer."
+  desc["Innodb_data_reads"]                = "Data pages read from disk."
+  desc["Innodb_data_writes"]               = "Data pages written to disk."
+  desc["Innodb_log_waits"]                 = "Log waits for buffer flushes."
+  desc["Innodb_log_writes"]                = "Log writes to InnoDB log file."
+  desc["Key_reads"]                        = "MyISAM disk reads (Use InnoDB)."
+  desc["Key_writes"]                       = "MyISAM disk writes (Use InnoDB)."
+  desc["Max_used_connections"]             = "Max concurrent connections so far."
+  desc["Open_files"]                       = "Files currently open by MySQL."
+  desc["Open_tables"]                      = "Tables currently open."
+  desc["Opened_tables"]                    = "Total tables opened since start."
+  desc["Questions"]                        = "Total number of client requests."
+  desc["Select_full_join"]                 = "Joins without usable indexes."
+  desc["Select_scan"]                      = "Full table scans in SELECT queries."
+  desc["Slow_queries"]                     = "Queries exceeding long_query_time."
+  desc["Sort_merge_passes"]                = "Merge passes performed for sorting."
+  desc["Sort_range"]                       = "Range-based sort operations."
+  desc["Sort_rows"]                        = "Rows sorted by MySQL."
+  desc["Sort_scan"]                        = "Table-scan-based sort operations."
+  desc["Table_open_cache_hits"]            = "Cache hits for table open."
+  desc["Table_open_cache_misses"]          = "Cache misses for table open."
+  desc["Table_locks_immediate"]            = "Locks acquired immediately."
+  desc["Table_locks_waited"]               = "Locks that had to wait. (bad)."
+  desc["Threads_cached"]                   = "Threads in the thread cache."
+  desc["Threads_connected"]                = "Currently open connections."
+  desc["Threads_created"]                  = "Threads created for connections."
+  desc["Threads_running"]                  = "Threads currently running queries."
+  desc["Uptime"]                           = ""
+
+  section = ""; tables = 0; err = ""
+}
+
+/^@@[A-Z]+/ { section = substr($1, 3); if (section == "TIME") now = $2; next }
+
+section == "PREV" { prev[$1] = $2 + 0; next }
+
+section == "CUR" {
+  if ($0 ~ /^\|/) {
+    n = split($0, f, "|")
+    name = trim(f[2]); val = trim(f[3])
+    if (name == "Variable_name") { tables++; next }
+    if (tables == 1 && (name in wanted)) cur[name] = val + 0
+    else if (tables == 2 && (name in wanted_var)) vars[name] = val + 0
+  } else if ($0 !~ /^\+/ && $0 != "") {
+    err = (err == "") ? $0 : err " " $0
+  }
+  next
+}
+
+section == "MEMINFO" { sub(/:$/, "", $1); mem[$1] = $2 * 1024; next }
+
+section == "CPU" {
+  cpu_total = 0
+  for (i = 2; i <= 9 && i <= NF; i++) cpu_total += $i
+  cpu_idle = $5 + $6
+  next
+}
+
+section == "LOAD" { load = $1 " " $2 " " $3; next }
+
+END {
+  have_prev = ("T" in prev) && ("Uptime" in prev) && ("Uptime" in cur) && cur["Uptime"] >= prev["Uptime"]
+  elapsed = have_prev ? (now - prev["T"]) / 1000000 : 0
+  if (elapsed <= 0) have_prev = 0
+
+  w1 = 15; w2 = 10; w3 = 6; w4 = 25
+
+  if (!("Uptime" in cur)) {
+    addHeader("MySQL Runtime Metrics")
+    addLine("Unable to read MySQL status. Retrying every refresh...", RED)
+    if (err != "") addLine(err, RED)
+  } else {
+    addHeader("MySQL Runtime Metrics")
+    addRow("Variable", "Total", "Now/s", "Description", "")
+
+    for (i = 1; i <= nm; i++) {
+      name = metrics[i]
+      if (!(name in cur)) continue
+
+      if (name == "Uptime") {
+        addSpanRow("Uptime (Wait 24h for accuracy)", prettyTime(cur[name]))
+        continue
+      }
+
+      label = name
+      if (name == "Questions" && cur["Uptime"] > 0)
+        label = sprintf("Questions (%.2f avg QPS)", cur["Questions"] / cur["Uptime"])
+
+      extra = (name in gauge) ? "" : formatRate(rate(name))
+      color = (name == "Innodb_buffer_pool_pages_free" && cur[name] == 0) ? RED : ""
+      addRow(label, formatNumber(cur[name]), extra, desc[name], color)
+    }
+
+    addHeader("MySQL Health Metrics")
+    addRow("Metric", "Boot avg", "Now", "", "")
+
+    page_size = ("innodb_page_size" in vars && vars["innodb_page_size"] > 0) ? vars["innodb_page_size"] : 16384
+
+    if ("innodb_buffer_pool_size" in vars)
+      addRow("InnoDB Buffer Pool Size", formatBytes(vars["innodb_buffer_pool_size"]), "",
+             "Set by innodb_buffer_pool_size.", "")
+
+    if ("Innodb_buffer_pool_pages_free" in cur) {
+      free_val = formatBytes(cur["Innodb_buffer_pool_pages_free"] * page_size)
+      if (cur["Innodb_buffer_pool_pages_total"] > 0)
+        free_val = free_val sprintf(" (%.0f%%)", 100 * cur["Innodb_buffer_pool_pages_free"] / cur["Innodb_buffer_pool_pages_total"])
+      addRow("InnoDB Buffer Pool Free", free_val, "", "Zero/low? = innodb_buffer_pool_size.",
+             (cur["Innodb_buffer_pool_pages_free"] == 0) ? RED : "")
+    }
+
+    boot = ""; now_r = ""
+    if (cur["Innodb_buffer_pool_read_requests"] > 0) {
+      boot = 100 * (1 - cur["Innodb_buffer_pool_reads"] / cur["Innodb_buffer_pool_read_requests"])
+      if (boot < 0) boot = 0
+    }
+    if (have_prev && delta("Innodb_buffer_pool_read_requests") > 0) {
+      now_r = 100 * (1 - delta("Innodb_buffer_pool_reads") / delta("Innodb_buffer_pool_read_requests"))
+      if (now_r < 0) now_r = 0
+    }
+    if (boot != "")
+      addRow("InnoDB Buffer Pool Hit Ratio", pct2(boot), pct2(now_r), "High QPS? Aim for high hit ratio.", "")
+
+    boot = ""; now_r = ""
+    if (cur["Connections"] > 0) boot = 100 * (1 - cur["Threads_created"] / cur["Connections"])
+    if (have_prev && delta("Connections") > 0) now_r = 100 * (1 - delta("Threads_created") / delta("Connections"))
+    if (boot != "")
+      addRow("Thread Cache Hit Ratio", pct(boot), pct(now_r), "Faster connection handling. > 90%.", "")
+
+    boot = ""; now_r = ""
+    total = cur["Table_open_cache_hits"] + cur["Table_open_cache_misses"]
+    if (total > 0) boot = 100 * cur["Table_open_cache_hits"] / total
+    if (have_prev) {
+      total = delta("Table_open_cache_hits") + delta("Table_open_cache_misses")
+      if (total > 0) now_r = 100 * delta("Table_open_cache_hits") / total
+    }
+    if (boot != "")
+      addRow("Table Cache Hit Ratio", pct(boot), pct(now_r), "Faster table access speeds. > 90%.", "")
+
+    boot = ""; now_r = ""
+    if (cur["Created_tmp_tables"] > 0) boot = 100 * cur["Created_tmp_disk_tables"] / cur["Created_tmp_tables"]
+    if (have_prev && delta("Created_tmp_tables") > 0) now_r = 100 * delta("Created_tmp_disk_tables") / delta("Created_tmp_tables")
+    if (boot != "")
+      addRow("Temp tables created on disk", pct(boot), pct(now_r), "Keep this low! Disk I/O is slow.", "")
+
+    if (vars["max_connections"] > 0)
+      addRow("Connection Usage (peak / now)", pct(100 * cur["Max_used_connections"] / vars["max_connections"]),
+             pct(100 * cur["Threads_connected"] / vars["max_connections"]),
+             sprintf("Of max_connections (%d). < 85%%.", vars["max_connections"]), "")
+  }
+
+  addHeader("System")
+  if (mem["MemTotal"] > 0) {
+    gb = 1073741824
+    avail = ("MemAvailable" in mem) ? mem["MemAvailable"] : mem["MemFree"]
+    avail_pct = 100 * avail / mem["MemTotal"]
+    mem_line = sprintf("Memory: Total %.2f GB, Used %.2f GB, Free %.2f GB, Available %.2f GB",
+                       mem["MemTotal"] / gb, (mem["MemTotal"] - avail) / gb, mem["MemFree"] / gb, avail / gb)
+    if (avail_pct < 10) addLine(mem_line sprintf(" (Warning!: %.1f%%)", avail_pct), RED)
+    else addLine(mem_line, "")
+  }
+  cpu_line = "CPU: "
+  if (("cpu_total" in prev) && cpu_total > prev["cpu_total"])
+    cpu_line = cpu_line sprintf("%.1f%%", 100 * (1 - (cpu_idle - prev["cpu_idle"]) / (cpu_total - prev["cpu_total"])))
+  else
+    cpu_line = cpu_line "-"
+  if (load != "") cpu_line = cpu_line "   Load: " load
+  addLine(cpu_line, "")
+
+  width = w1 + w2 + w3 + w4 + 9
+  for (i = 1; i <= nrows; i++) {
+    if (rkind[i] == "hdr") {
+      print rule(rname[i], width)
+    } else if (rkind[i] == "line") {
+      print rcolor[i] rname[i] (rcolor[i] != "" ? RESET : "")
+    } else if (rkind[i] == "span") {
+      printf "%-" w1 "s | %s\n", rname[i], rval[i]
+    } else {
+      line = sprintf("%-" w1 "s | %-" w2 "s | %-" w3 "s | %s", rname[i], rval[i], rextra[i], rdesc[i])
+      print rcolor[i] line (rcolor[i] != "" ? RESET : "")
+    }
+  }
+  print rule(title, width)
+
+  print "@@STATE"
+  printf "T %.0f\n", now
+  if (cpu_total > 0) printf "cpu_total %.0f\ncpu_idle %.0f\n", cpu_total, cpu_idle
+  for (name in cur) printf "%s %.0f\n", name, cur[name]
+}
+AWK
+
+# Collects every input the renderer needs in one stream; the only external command is mysqladmin.
+render_frame() {
+  local now line
+  now_us; now=$REPLY
+  local raw
+  raw=$(
+    printf '@@TIME %s\n@@PREV\n%s\n@@CUR\n' "$now" "$state"
+    mysqladmin extended-status variables 2>&1
+    printf '@@MEMINFO\n'
+    [[ -r /proc/meminfo ]] && printf '%s\n' "$(</proc/meminfo)"
+    printf '@@CPU\n'
+    [[ -r /proc/stat ]] && { read -r line < /proc/stat; printf '%s\n' "$line"; }
+    printf '@@LOAD\n'
+    [[ -r /proc/loadavg ]] && printf '%s\n' "$(</proc/loadavg)"
+  )
+  local out
+  out=$(awk -v title="$TITLE" "$RENDER_AWK" <<< "$raw")
+  frame=${out%%$'\n'@@STATE*}
+  state=${out#*@@STATE$'\n'}
+}
+
+# Draws the cached frame in place: home the cursor, overwrite each line, clear what is left.
+draw() {
+  local -a lines
+  mapfile -t lines <<< "$frame"
+
+  if (( ${#lines[@]} > rows || cols < MIN_COLS )); then
+    local need=$(( ${#lines[@]} > rows ? ${#lines[@]} : rows ))
+    local msg="Terminal too small. Resize to at least ${MIN_COLS}x${need}. ('q' to exit)"
+    local msg_col=$(( (cols - ${#msg}) / 2 + 1 ))
+    (( msg_col < 1 )) && msg_col=1
+    printf '\033[H\033[J\033[%d;%dH\033[1;31m%s\033[0m' $(( rows / 2 )) "$msg_col" "$msg"
+    return
+  fi
+
+  local buf=$'\033[H' line
+  for line in "${lines[@]}"; do
+    buf+="${line}"$'\033[K\n'
+  done
+  printf '%s\033[J' "${buf%$'\n'}"
+}
+
+read_size() { read -r rows cols < <(stty size 2>/dev/null) || { rows=24; cols=80; }; }
+
+# Restore the terminal exactly once, whatever the exit path (q, Ctrl+C, TERM or error).
+cleanup() {
+  printf '\033[?7h\033[?25h'
+  tput rmcup 2>/dev/null || true
+  echo "Exiting MySQL Monitor. Goodbye!"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'resized=1' WINCH
 
 tput smcup 2>/dev/null || true
+# Hide the cursor, disable line wrapping and clear the screen once.
+printf '\033[?25l\033[?7l\033[H\033[J'
 
-# Hide the cursor to reduce flicker
-printf '\033[?25l'
+state=""
+resized=0
+read_size
 
-# Clear the screen once before starting the loop
-printf "\033[H\033[J"
-
-# ---------------- NEW: Disable wrapping here ----------------
-printf "\033[?7l"
-# -----------------------------------------------------------
+# First refresh comes after 1 second so per-second rates appear quickly.
+first_wait=1
 
 while true; do
+  render_frame
+  draw
 
-  # Read current terminal size
-  read rows cols <<< "$(stty size)"
-
-  # If terminal size is below minimum, show a warning in the center
-  if [[ $rows -lt $MIN_ROWS || $cols -lt $MIN_COLS ]]; then
-    printf "\033[H\033[J"
-    WARNING_MSG="❗ Terminal size too small. Resize to at least ${MIN_COLS}x${MIN_ROWS}. ❗"
-    msg_length=${#WARNING_MSG}
-    msg_row=$((rows / 2))
-    msg_col=$(((cols - msg_length) / 2))
-    (( msg_col < 0 )) && msg_col=0
-
-    # Move cursor to the calculated position and print warning in bold red
-    printf "\033[${msg_row};${msg_col}H\033[1;31m%s\033[0m\n" "$WARNING_MSG"
-
-    read -t 2 -n 1 -r key
-    if [[ $key == "q" || $key == "Q" ]]; then
-      cleanup
+  # Wait for the next refresh in short slices so resizes redraw immediately.
+  now_us
+  deadline=$(( REPLY + ${first_wait:-$INTERVAL} * 1000000 ))
+  first_wait=""
+  while true; do
+    if (( resized )); then
+      resized=0
+      read_size
+      draw
     fi
-    continue
-  fi
-
-  # Initialize an empty variable to hold all output
-  output=""
-
-  # Add MySQL Runtime Metrics header
-  output+=$'------------------------------- MySQL Runtime Metrics -------------------------------\n'
-
-  # Capture MySQL status and append to output
-  mysql_data=$(get_mysql_status | awk '
-    function prettyTime(sec) {
-      years   = int(sec / 31536000); sec %= 31536000
-      months  = int(sec / 2592000);  sec %= 2592000
-      days    = int(sec / 86400);    sec %= 86400
-      hours   = int(sec / 3600);     sec %= 3600
-      minutes = int(sec / 60);
-      seconds = sec % 60;
-
-      out=""
-      if (years   > 0) out = out years   "y "
-      if (months  > 0) out = out months  "m "
-      if (days    > 0) out = out days    "d "
-      if (hours   > 0) out = out hours   "h "
-      if (minutes > 0) out = out minutes "m "
-      if (seconds > 0) out = out seconds "s"
-      return (out == "") ? "0s" : out
-    }
-
-    # Converts large numbers into user-friendly formats (K, M, B, T)
-    function formatNumber(num) {
-      if (num >= 1e12) {
-        return sprintf("%.2fT", num / 1e12)
-      } else if (num >= 1e9) {
-        return sprintf("%.2fB", num / 1e9)
-      } else if (num >= 1e6) {
-        return sprintf("%.2fM", num / 1e6)
-      } else if (num >= 1e3) {
-        return sprintf("%.2fK", num / 1e3)
-      } else {
-        return num
-      }
-    }
-
-    function shortSizeMB(mb) {
-      if (mb >= 1024) {
-        gb = mb / 1024
-        return sprintf("%.0f GB", gb)
-      } else {
-        return sprintf("%.0f MB", mb)
-      }
-    }
-
-    BEGIN {
-      desc["Aborted_clients"]                  = "Failed client connections."
-      desc["Aborted_connects"]                 = "Failed MySQL server connections."
-      desc["Connections"]                      = "Total connection attempts."
-      desc["Created_tmp_disk_tables"]          = "Temp tables created on disk."
-      desc["Created_tmp_files"]                = "Temp files created by MySQL."
-      desc["Created_tmp_tables"]               = "Temp tables created in memory."
-      desc["Innodb_buffer_pool_pages_free"]    = "Free pages in InnoDB buffer pool."
-      desc["Innodb_buffer_pool_reads"]         = "Logical reads from disk."
-      desc["Innodb_buffer_pool_read_requests"] = "Logical read requests to buffer."
-      desc["Innodb_buffer_pool_size"]          = "InnoDB buffer pool size (bytes)."
-      desc["Innodb_buffer_pool_wait_free"]     = "Waits for free pages."
-      desc["Innodb_buffer_pool_write_requests"]= "Writes requested to InnoDB buffer."
-      desc["Innodb_data_reads"]                = "Data pages read from disk."
-      desc["Innodb_data_writes"]               = "Data pages written to disk."
-      desc["Innodb_log_waits"]                 = "Log waits for buffer flushes."
-      desc["Innodb_log_writes"]                = "Log writes to InnoDB log file."
-      desc["Key_reads"]                        = "MyISAM disk reads (Use InnoDB)."
-      desc["Key_writes"]                       = "MyISAM disk writes (Use InnoDB)."
-      desc["Max_used_connections"]             = "Max concurrent connections so far."
-      desc["Open_files"]                       = "Files currently open by MySQL."
-      desc["Open_tables"]                      = "Tables currently open."
-      desc["Opened_tables"]                    = "Total tables opened since start."
-      desc["Questions"]                        = "Total number of client requests."
-      desc["Select_full_join"]                 = "Joins without usable indexes."
-      desc["Select_scan"]                      = "Full table scans in SELECT queries."
-      desc["Slow_queries"]                     = "Queries exceeding long_query_time."
-      desc["Sort_merge_passes"]                = "Merge passes performed for sorting."
-      desc["Sort_range"]                       = "Range-based sort operations."
-      desc["Sort_rows"]                        = "Rows sorted by MySQL."
-      desc["Sort_scan"]                        = "Table-scan-based sort operations."
-      desc["Table_open_cache_hits"]            = "Cache hits for table open."
-      desc["Table_open_cache_misses"]          = "Cache misses for table open."
-      desc["Table_locks_immediate"]            = "Locks acquired immediately."
-      desc["Table_locks_waited"]               = "Locks that had to wait. (bad)."
-      desc["Threads_cached"]                   = "Threads in the thread cache."
-      desc["Threads_connected"]                = "Currently open connections."
-      desc["Threads_created"]                  = "Threads created for connections."
-      desc["Threads_running"]                  = "Threads currently running queries."
-      desc["Uptime"]                           = ""
-
-      desc["InnoDB Buffer Pool Free"]          = "Zero/low? = innodb_buffer_pool_size."
-      desc["InnoDB Buffer Pool Hit Ratio"]     = "High QPS? Aim for high hit ratio."
-      desc["Thread Cache Hit Ratio"]           = "Faster connection handling. > 90%."
-      desc["Table Cache Hit Ratio"]            = "Faster table access speeds. > 90%."
-      desc["Temp tables created on disk"]      = "Keep this low! Disk I/O is slow."
-
-      additional_labels[1] = "InnoDB Buffer Pool Free"
-      additional_labels[2] = "InnoDB Buffer Pool Hit Ratio"
-      additional_labels[3] = "Thread Cache Hit Ratio"
-      additional_labels[4] = "Table Cache Hit Ratio"
-      additional_labels[5] = "Temp tables created on disk"
-    }
-
-    {
-      varName  = $2
-      varValue = $4
-      data[varName] = varValue
-    }
-
-    END {
-      count = 0
-      for (v in data) {
-        count++
-        keys[count] = v
-      }
-      asort(keys)
-
-      ibp_size_mb = ""
-      if ("Innodb_buffer_pool_size" in data) {
-        ibp_size_mb = data["Innodb_buffer_pool_size"] / (1024 * 1024)
-      }
-
-      ibp_free_mb = ""
-      if ("Innodb_buffer_pool_pages_free" in data) {
-        ibp_free_mb = data["Innodb_buffer_pool_pages_free"] * 16 / 1024
-      }
-
-      qps = ""
-      if (("Questions" in data) && ("Uptime" in data) && (data["Uptime"] > 0)) {
-        qps = data["Questions"] / data["Uptime"]
-      }
-
-      tmp_disk_ratio = ""
-      if (("Created_tmp_disk_tables" in data) && ("Created_tmp_tables" in data) && (data["Created_tmp_tables"] > 0)) {
-        tmp_disk_ratio = 100 * data["Created_tmp_disk_tables"] / data["Created_tmp_tables"]
-      }
-
-      thread_cache_ratio = ""
-      if (("Threads_created" in data) && ("Connections" in data) && (data["Connections"] > 0)) {
-        thread_cache_ratio = 100 * (1 - (data["Threads_created"] / data["Connections"]))
-      }
-
-      table_cache_ratio = ""
-      if (("Table_open_cache_hits" in data) && ("Table_open_cache_misses" in data) &&
-          (data["Table_open_cache_hits"] + data["Table_open_cache_misses"] > 0)) {
-        table_cache_ratio = 100 * (data["Table_open_cache_hits"] / (data["Table_open_cache_hits"] + data["Table_open_cache_misses"]))
-      }
-
-      ibp_efficiency = ""
-      if (("Innodb_buffer_pool_read_requests" in data) && ("Innodb_buffer_pool_reads" in data) &&
-          (data["Innodb_buffer_pool_read_requests"] > 0)) {
-        temp_ratio = 100 * (1 - (data["Innodb_buffer_pool_reads"] / data["Innodb_buffer_pool_read_requests"]))
-        if (temp_ratio < 0) {
-          temp_ratio = 0
-        }
-        ibp_efficiency = temp_ratio
-      }
-
-      col1_width = 0
-      col2_width = 0
-      col3_width = 0
-
-      for (v in data) {
-        if (length(v) > col1_width) col1_width = length(v)
-        if (length(data[v]) > col2_width) col2_width = length(data[v])
-        if (length(desc[v]) > col3_width) col3_width = length(desc[v])
-      }
-
-      for (i in additional_labels) {
-        label_length = length(additional_labels[i])
-        if (label_length > col1_width) {
-          col1_width = label_length
-        }
-      }
-
-      col1_width = (col1_width > 15 ? col1_width : 15)
-      col2_width = (col2_width > 10 ? col2_width : 10)
-      col3_width = (col3_width > 25 ? col3_width : 25)
-
-      output = ""
-
-      for (i=1; i<=count; i++) {
-        varName = keys[i]
-        explanation = (varName in desc) ? desc[varName] : "No description available"
-
-        if (varName == "Uptime") {
-          val = prettyTime(data[varName])
-          output = output sprintf("%-" col1_width "s | %s %s\n", varName " (Wait 24h for accuracy)", val, explanation)
-          continue
-        }
-
-        val = formatNumber(data[varName])
-
-        if (varName == "Questions" && qps != "") {
-          qps_formatted = sprintf("(%.2f QPS)", qps)
-          varName = varName " " qps_formatted
-        }
-
-        if (varName == "Innodb_buffer_pool_pages_free" && data[varName] == 0) {
-          output = output sprintf("\033[0;31m%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\033[0m\n",
-                                  varName, val, explanation)
-        } else {
-          output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n",
-                                  varName, val, explanation)
-        }
-      }
-
-      output = output sprintf("------------------------------- MySQL Health Metrics --------------------------------\n")
-
-      if (ibp_free_mb != "") {
-        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n",
-                                "InnoDB Buffer Pool Free", shortSizeMB(ibp_free_mb), desc["InnoDB Buffer Pool Free"])
-      }
-
-      if (ibp_efficiency != "") {
-        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n",
-                                "InnoDB Buffer Pool Hit Ratio", sprintf("%.1f%%", ibp_efficiency),
-                                desc["InnoDB Buffer Pool Hit Ratio"])
-      }
-
-      if (thread_cache_ratio != "") {
-        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n",
-                                "Thread Cache Hit Ratio", sprintf("%.1f%%", thread_cache_ratio),
-                                desc["Thread Cache Hit Ratio"])
-      }
-
-      if (table_cache_ratio != "") {
-        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n",
-                                "Table Cache Hit Ratio", sprintf("%.1f%%", table_cache_ratio),
-                                desc["Table Cache Hit Ratio"])
-      }
-
-      if (tmp_disk_ratio != "") {
-        output = output sprintf("%-" col1_width "s | %-" col2_width "s | %-" col3_width "s\n",
-                                "Temp tables created on disk", sprintf("%.1f%%", tmp_disk_ratio),
-                                desc["Temp tables created on disk"])
-      }
-
-      print output
-    }
-  ')
-
-  # Append newline
-  output+="${mysql_data}"$'\n------------------------------- System Memory ---------------------------------------'
-
-  # System Memory Section
-  mem_raw=$(free -b | awk '/Mem:/ {print $2, $3, $4, $7}')
-  read -r -a mem_array <<< "$mem_raw"
-
-  mem_total_bytes=${mem_array[0]}
-  mem_used_bytes=${mem_array[1]}
-  mem_free_bytes=${mem_array[2]}
-  mem_avail_bytes=${mem_array[3]}
-
-  mem_total_gb=$(awk "BEGIN {printf \"%.2f\", $mem_total_bytes / 1024 / 1024 / 1024}")
-  mem_used_gb=$(awk "BEGIN {printf \"%.2f\", $mem_used_bytes / 1024 / 1024 / 1024}")
-  mem_free_gb=$(awk "BEGIN {printf \"%.2f\", $mem_free_bytes / 1024 / 1024 / 1024}")
-  mem_avail_gb=$(awk "BEGIN {printf \"%.2f\", $mem_avail_bytes / 1024 / 1024 / 1024}")
-
-  avail_mem_percentage=$(awk "BEGIN {printf \"%.2f\", 100 * $mem_avail_bytes / $mem_total_bytes}")
-  is_low_mem=$(awk "BEGIN {print ($avail_mem_percentage < 10)}")
-
-  if (( is_low_mem )); then
-    mem_info="Total: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB \033[0;31m(Warning!: ${avail_mem_percentage}%%)\033[0m"
-  else
-    mem_info="Total: ${mem_total_gb} GB, Used: ${mem_used_gb} GB, Free: ${mem_free_gb} GB, Available: ${mem_avail_gb} GB"
-  fi
-
-  output+=$'\n'"${mem_info}"$'\n'
-  output+="${TITLE}"$'\n'
-
-  # Move cursor to top-left and print all output at once
-  printf "\033[H\033[J"  # Clear screen each time to avoid partial lines.
-  printf "\033[H%s" "$output"
-
-  # Wait for user input with timeout
-  read -t "$INTERVAL" -n 1 -r key
-  if [[ $key == "q" || $key == "Q" ]]; then
-    cleanup
-  fi
+    now_us
+    remaining=$(( deadline - REPLY ))
+    (( remaining <= 0 )) && break
+    (( remaining > 200000 )) && remaining=200000
+    printf -v timeout '0.%06d' "$remaining"
+    if read -t "$timeout" -n 1 -s -r key; then
+      [[ $key == "q" || $key == "Q" ]] && exit 0
+    fi
+  done
 done
