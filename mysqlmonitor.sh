@@ -251,8 +251,8 @@ function bar(p, w, warn, crit,    f, c) {
 }
 
 # Sparkline of the last w samples, scaled from 0 to the window's peak but never below
-# floor, so a steady low value doesn't fill the whole bar. Zero is a dot and the top
-# level is ▆, never █, so graphs on neighbouring lines don't touch each other.
+# floor, so a steady low value doesn't fill the whole bar. Zero draws nothing and the
+# top level is ▆, never █, so graphs on neighbouring lines don't touch each other.
 function spark(key, w, floor,    n, a, i, start, mx, s, idx) {
   if (w <= 0) return ""
   n = (hist[key] == "") ? 0 : split(hist[key], a, ",")
@@ -782,11 +782,11 @@ BEGIN {
   if (unicode) {
     G_FULL = "█"; G_EMPTY = "░"; G_OK = "✓"; G_WARN = "⚠"; G_CRIT = "✗"
     G_DOT = "●"; G_SEP = "▸"; G_H = "─"; G_V = "│"; G_ELL = "…"; G_UP = "↑"; G_DOWN = "↓"
-    split("· ▁ ▂ ▃ ▄ ▅ ▆", SPK, " ")
+    split("_ ▁ ▂ ▃ ▄ ▅ ▆", SPK, " "); SPK[1] = " "
   } else {
     G_FULL = "#"; G_EMPTY = "."; G_OK = "+"; G_WARN = "!"; G_CRIT = "x"
     G_DOT = "*"; G_SEP = ">"; G_H = "-"; G_V = "|"; G_ELL = "~"; G_UP = "Up"; G_DOWN = "Dn"
-    split(". _ - = + * #", SPK, " ")
+    split("_ _ - = + * #", SPK, " "); SPK[1] = " "
   }
 
   # Display order of the raw view, and which metrics are point-in-time gauges (no rate)
