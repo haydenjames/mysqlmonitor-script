@@ -152,6 +152,8 @@ function vw(s,    t) {
 
 function rep(ch, n,    s) { s = ""; while (n-- > 0) s = s ch; return s }
 function padR(s, w) { return s rep(" ", w - vw(s)) }
+# A column segment: like padR, but counts segments too wide for their column (OVER)
+function colpad(s, w) { if (vw(s) > w) OVER++; return padR(s, w) }
 function padL(s, w) { return rep(" ", w - vw(s)) s }
 # Shortens plain (unstyled) text to w columns without splitting a UTF-8 character.
 function clip(s, w,    i, n, c, out) {
@@ -474,7 +476,9 @@ function buildPanels(    p) {
   } else {
     ORDER[++NP] = "thr"; panel("thr", "THROUGHPUT")
     pl(L(0, "Queries/s", formatRate(r_q), spark("qps", GW, 1), "avg " formatRate(avg_qps), "Client requests per second."))
-    pl(R(high(r_slow, 1, 10), "Slow/s", "Slow_queries", spark("slow", GW, 1), "Queries exceeding long_query_time."))
+    pl(L(high(r_slow, 1, 10), "Slow/s", formatRate(r_slow), spark("slow", GW, 1),
+         (slow_pct != "") ? pct2(slow_pct) " slow" : "total " formatNumber(cur["Slow_queries"]),
+         "Queries exceeding long_query_time."))
     pl(R(0, "Sel scan/s", "Select_scan", spark("scan", GW, 1), "Full table scans in SELECT queries."))
     pl(R(high(r_fj, 1, 10), "Full join/s", "Select_full_join", "", "Joins without usable indexes."))
     pd(L(0, "Questions", formatNumber(cur["Questions"]), "", "since boot", "Total number of client requests."))
@@ -599,6 +603,7 @@ function arrange(n, sep,    i, a, b, mx, best, ba, bb) {
 
 # Emits the panels packed into n columns of width colw.
 function gridBody(n, colw,    sep, i, j, c, H, line, seg) {
+  OVER = 0
   sep = (n > 1)
   arrange(n, sep)
   for (c = 1; c <= n; c++) CH[c] = 0
@@ -613,6 +618,7 @@ function gridBody(n, colw,    sep, i, j, c, H, line, seg) {
     for (c = 1; c <= n; c++) {
       seg = (j <= CH[c]) ? COL[c, j] : ""
       line = (c == 1) ? seg : padR(line, (c - 1) * (colw + 2)) seg
+      if (vw(seg) > colw) OVER++
     }
     emit(line)
   }
@@ -639,25 +645,26 @@ function layoutCompact(budget, qrows,    colw, sep) {
   colw = int((cols - 4) / 2); if (colw > 44) colw = 44
   setWidths(colw, 1)
   sep = " " paint(DIM, G_V) " "
+  OVER = 0
   emit(header(2 * colw + 3))
   if (up) {
-    emit(padR(L(0, "QPS", formatRate(r_q), spark("qps", GW, 1), ""), colw) sep \
+    emit(colpad(L(0, "QPS", formatRate(r_q), spark("qps", GW, 1), ""), colw) sep \
          L(high(conn_pct, 85, 95), "Conn", cur["Threads_connected"] ((maxc > 0) ? "/" maxc : ""), bar(conn_pct, GW, 85, 95), (GW > 0) ? pct(conn_pct) : ""))
-    emit(padR(L(high(r_slow, 1, 10), "Slow/s", formatRate(r_slow), spark("slow", GW, 1), ""), colw) sep \
+    emit(colpad(L(high(r_slow, 1, 10), "Slow/s", formatRate(r_slow), spark("slow", GW, 1), ""), colw) sep \
          L(0, "Running", cur["Threads_running"], spark("running", GW, ncpu), ""))
-    emit(padR(L(low(hit_now, 99, 95), "BP hit", pct2((hit_now != "") ? hit_now : hit_boot), "", ""), colw) sep \
+    emit(colpad(L(low(hit_now, 99, 95), "BP hit", pct2((hit_now != "") ? hit_now : hit_boot), "", ""), colw) sep \
          L(high(mem_used_pct, 90, 95), "Memory", pct(mem_used_pct), bar(mem_used_pct, GW, 90, 95), ""))
-    emit(padR(L((r_tmp >= 1) ? high(tmp_now, 25, 50) : 0, "Tmp disk", pct((tmp_now != "") ? tmp_now : tmp_boot), "", ""), colw) sep \
+    emit(colpad(L((r_tmp >= 1) ? high(tmp_now, 25, 50) : 0, "Tmp disk", pct((tmp_now != "") ? tmp_now : tmp_boot), "", ""), colw) sep \
          L(high(cpu_pct, 80, 95), "CPU", pct(cpu_pct), bar(cpu_pct, GW, 80, 95), ""))
     # Extra pairs when the terminal has spare rows (CX = 0..3, set by fit)
     if (CX >= 1)
-      emit(padR(L(0, "Scans/s", formatRate(r_scan), spark("scan", GW, 1), ""), colw) sep \
+      emit(colpad(L(0, "Scans/s", formatRate(r_scan), spark("scan", GW, 1), ""), colw) sep \
            L(high(peak_pct, 85, 95), "Peak", cur["Max_used_connections"] ((maxc > 0) ? "/" maxc : ""), bar(peak_pct, GW, 85, 95), ""))
     if (CX >= 2)
-      emit(padR(L(0, "Disk rd/s", formatRate(r_bpr), spark("bpr", GW, 1), ""), colw) sep \
+      emit(colpad(L(0, "Disk rd/s", formatRate(r_bpr), spark("bpr", GW, 1), ""), colw) sep \
            ((swap_total > 0) ? L(high(swap_pct, 20, 50), "Swap", pct(swap_pct), bar(swap_pct, GW, 20, 50), "") : L(0, "Swap", "none", "", "")))
     if (CX >= 3)
-      emit(padR(L((toc > 0 && cur["Open_tables"] >= toc && r_opened >= 1) ? 2 : 0, "Open tbl", pct(ot_pct), bar(ot_pct, GW, 95, 101), ""), colw) sep \
+      emit(colpad(L((toc > 0 && cur["Open_tables"] >= toc && r_opened >= 1) ? 2 : 0, "Open tbl", pct(ot_pct), bar(ot_pct, GW, 95, 101), ""), colw) sep \
            L(0, "Load", "", "", load))
   } else {
     emit(L(3, "MySQL", "DOWN", "", clip(err, 2 * colw - 20)))
@@ -912,6 +919,10 @@ END {
 
   avg_qps = (cur["Uptime"] > 0) ? cur["Questions"] / cur["Uptime"] : ""
   r_q = rate("Questions"); r_slow = rate("Slow_queries"); r_scan = rate("Select_scan")
+  # Share of queries that were slow: a rate alone means little without the load behind it
+  slow_boot = (cur["Questions"] > 0) ? 100 * cur["Slow_queries"] / cur["Questions"] : ""
+  slow_now = (have_prev && delta("Questions") > 0) ? 100 * delta("Slow_queries") / delta("Questions") : ""
+  slow_pct = (slow_now != "") ? slow_now : slow_boot
   r_fj = rate("Select_full_join"); r_conn = rate("Connections")
   r_abort = (rate("Aborted_clients") != "" && rate("Aborted_connects") != "") ? rate("Aborted_clients") + rate("Aborted_connects") : ""
   r_bpr = rate("Innodb_buffer_pool_reads"); r_wait = rate("Innodb_buffer_pool_wait_free")
@@ -924,26 +935,28 @@ END {
     hit_boot = 100 * (1 - cur["Innodb_buffer_pool_reads"] / cur["Innodb_buffer_pool_read_requests"])
     if (hit_boot < 0) hit_boot = 0
   }
-  if (have_prev && delta("Innodb_buffer_pool_read_requests") > 0) {
+  # A ratio over a handful of events is noise: "now" ratios need a minimum sample,
+  # otherwise the since-boot value is shown and no alert is raised.
+  if (have_prev && delta("Innodb_buffer_pool_read_requests") >= 1000) {
     hit_now = 100 * (1 - delta("Innodb_buffer_pool_reads") / delta("Innodb_buffer_pool_read_requests"))
     if (hit_now < 0) hit_now = 0
   }
 
   tc_boot = ""; tc_now = ""
   if (cur["Connections"] > 0) tc_boot = 100 * (1 - cur["Threads_created"] / cur["Connections"])
-  if (have_prev && delta("Connections") > 0) tc_now = 100 * (1 - delta("Threads_created") / delta("Connections"))
+  if (have_prev && delta("Connections") >= 10) tc_now = 100 * (1 - delta("Threads_created") / delta("Connections"))
 
   tbl_boot = ""; tbl_now = ""
   total = cur["Table_open_cache_hits"] + cur["Table_open_cache_misses"]
   if (total > 0) tbl_boot = 100 * cur["Table_open_cache_hits"] / total
   if (have_prev) {
     total = delta("Table_open_cache_hits") + delta("Table_open_cache_misses")
-    if (total > 0) tbl_now = 100 * delta("Table_open_cache_hits") / total
+    if (total >= 20) tbl_now = 100 * delta("Table_open_cache_hits") / total
   }
 
   tmp_boot = ""; tmp_now = ""
   if (cur["Created_tmp_tables"] > 0) tmp_boot = 100 * cur["Created_tmp_disk_tables"] / cur["Created_tmp_tables"]
-  if (have_prev && delta("Created_tmp_tables") > 0) tmp_now = 100 * delta("Created_tmp_disk_tables") / delta("Created_tmp_tables")
+  if (have_prev && delta("Created_tmp_tables") >= 20) tmp_now = 100 * delta("Created_tmp_disk_tables") / delta("Created_tmp_tables")
 
   maxc = vars["max_connections"]
   conn_pct = (maxc > 0) ? 100 * cur["Threads_connected"] / maxc : ""
@@ -998,7 +1011,7 @@ END {
     if (r_tmp >= 1 && tmp_now != "" && tmp_now >= 25)
       addAlert(high(tmp_now, 25, 50), sprintf("%.0f%% of temp tables go to disk. Check tmp_table_size / max_heap_table_size and query plans.", tmp_now))
     if (r_slow >= 1)
-      addAlert(high(r_slow, 1, 10), sprintf("%s slow queries/s. Check the slow query log.", formatRate(r_slow)))
+      addAlert(high(r_slow, 1, 10), sprintf("%s slow queries/s (%s of all queries). Check the slow query log.", formatRate(r_slow), pct2(slow_pct)))
     if (r_fj >= 1)
       addAlert(2, sprintf("%s joins/s without usable indexes (Select_full_join).", formatRate(r_fj)))
     if (r_lockw > 0)
@@ -1036,7 +1049,7 @@ END {
   # fitted dashboard hides anything (so 'd' is offered)
   print "@@SCROLL " SCROLL_OUT " " MAXOFF " " (MORE + 0)
   # Layout report for the size test harness (-v debug=1)
-  if (debug) printf "LAYOUT %s|%d|%d\n", CHOSEN, NO, QROWS > "/dev/stderr"
+  if (debug) printf "LAYOUT %s|%d|%d|%d\n", CHOSEN, NO, QROWS, OVER > "/dev/stderr"
 
   print "@@STATE"
   printf "T %.0f\n", now
