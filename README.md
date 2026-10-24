@@ -45,11 +45,13 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 | Key | Action |
 | --- | --- |
 | `q` | Quit |
+| `?` | Help: keys, marks and what the numbers mean |
+| `h` | Health checks: each ratio and rate against its target, with the setting to change and a suggested value when one fails |
 | `r` | Toggle the raw counters table (the classic view) |
 | `d` | Details: every counter and its description, in as many columns as fit the width. Offered when the fitted dashboard had to leave something out; `d` or `Esc` returns |
 | `↓` `↑` / `j` `k`, `PgDn` `PgUp`, `Home` `End` | Scroll, whenever a view is taller than the window. The header and alerts stay in place |
 
-Set `NO_COLOR=1` to disable colors. Non-UTF-8 terminals get an ASCII version automatically.
+`./mysqlmonitor.sh --help` lists the options and keys; `-i N` or a bare number sets the refresh interval. Set `NO_COLOR=1` to disable colors. Non-UTF-8 terminals get an ASCII version automatically.
 
 ## Requirements
 `bash`, `mysqladmin` and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.
@@ -58,11 +60,6 @@ To see other users' queries in the active queries panel, the MySQL user needs th
 
 ## Terminal size
 The screen is redrawn in place, so it no longer scrolls or flickers. If the window is too small to fit everything, the script tells you the size it needs and redraws as soon as you resize.
-
-## TO DO
-
-### Add a Help screen
-Add a --help flag for users who want to see usage information.
 
 ## Common Troubleshooting
 Here are some common issues and how to resolve them:

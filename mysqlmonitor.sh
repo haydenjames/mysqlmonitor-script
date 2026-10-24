@@ -22,14 +22,39 @@ done
 # Default refresh interval in seconds
 INTERVAL=5
 
-# Check if the user provided an interval
-if [[ $# -ge 1 ]]; then
-  if [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 )); then
-    INTERVAL=$1
-  else
-    echo "Invalid interval specified. Using default INTERVAL=$INTERVAL seconds."
-  fi
-fi
+usage() {
+  cat <<EOF
+Usage: ${0##*/} [options] [interval]
+
+Live MySQL/MariaDB dashboard for the terminal.
+
+  interval            refresh every N seconds (default $INTERVAL)
+  -i, --interval N    same as the positional interval
+  -h, --help          show this help and exit
+
+Keys while running:
+  q     quit                 h     health checks and tuning advice
+  ?     help                 r     raw counters (the classic table)
+  d     details: every counter and description (when the dashboard had to leave some out)
+  ↑ ↓ PgUp PgDn Home End     scroll a view that is taller than the window
+  Esc   back to the dashboard
+
+Credentials come from ~/.my.cnf ([client] user= / password=, chmod 600) or
+from running as root. Set NO_COLOR=1 to disable colours.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    -i|--interval) shift; [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 )) || { echo "Invalid interval: ${1:-missing}" >&2; exit 1; }; INTERVAL=$1 ;;
+    -*) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    *)
+      if [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 )); then INTERVAL=$1
+      else echo "Invalid interval specified. Using default INTERVAL=$INTERVAL seconds."; fi ;;
+  esac
+  shift
+done
 
 # Use Unicode glyphs only in a UTF-8 locale, and honour NO_COLOR (https://no-color.org).
 locale_name="${LC_ALL:-${LC_CTYPE:-$LANG}}"
@@ -165,6 +190,24 @@ function clip(s, w,    i, n, c, out) {
     out = out c
   }
   return out G_ELL
+}
+
+# Shortens styled text to w columns: colour codes are copied, not counted, and a
+# reset is appended so a cut line can't leak its style onto the next one.
+function clipStyled(s, w,    i, n, c, out, len) {
+  if (vw(s) <= w) return s
+  n = 0; out = ""; len = length(s)
+  for (i = 1; i <= len; i++) {
+    c = substr(s, i, 1)
+    if (c == "\033") {
+      while (i <= len && substr(s, i, 1) != "m") { out = out substr(s, i, 1); i++ }
+      out = out "m"
+      continue
+    }
+    if (c !~ /[\200-\277]/ && ++n > w - 1) break
+    out = out c
+  }
+  return out G_ELL RST
 }
 
 # Text from the server (queries, users, hosts) can contain anything: drop control
@@ -453,18 +496,155 @@ function header(w,    left, right, parts, n, i, st) {
 
 function key(k, label) { return " " paint(INV, " " k " ") " " label " " }
 
-# mode: "fit" (more = 1 when the fitted layout hides something), "details" or "raw".
-# pos is the visible range while the content scrolls. Shortens itself to fit w columns.
-function keybar(mode, more, pos, w,    k, lvl) {
+# mode: "fit" (more = 1 when the fitted layout hides something), "details", "raw" or
+# "view" (health/help). pos is the visible range while the content scrolls.
+# Shortens itself to fit w columns: full labels, short labels, then keys only.
+function keybar(mode, more, pos, w,    k, lvl, full) {
   if (mode == "fit") MORE = more
-  for (lvl = 1; lvl <= 3; lvl++) {
-    k = key("q", (lvl < 3) ? "Quit" : "") key("r", (lvl < 3) ? ((view == "raw") ? "Dashboard" : "Raw counters") : "")
-    if (mode == "fit" && more) k = k key("d", "Details")
-    if (mode == "details") k = k key("d", (lvl < 3) ? "Less" : "")
-    if (pos != "") k = k key(G_UP G_DOWN, (lvl == 1) ? "PgUp PgDn Scroll" : "Scroll") " " pos
+  for (lvl = 1; lvl <= 4; lvl++) {
+    full = (lvl < 3)
+    k = key("q", full ? "Quit" : "")
+    if (view == "help") {
+      k = k key("?", full ? "Back" : "")
+    } else {
+      k = k key("?", full ? "Help" : "")
+      k = k key("h", full ? ((view == "health") ? "Dashboard" : "Health") : "")
+      k = k key("r", full ? ((view == "raw") ? "Dashboard" : (lvl == 1) ? "Raw counters" : "Raw") : "")
+      if (mode == "fit" && more) k = k key("d", full ? "Details" : "")
+      if (mode == "details") k = k key("d", full ? "Less" : "")
+    }
+    if (pos != "") k = k key(G_UP G_DOWN, (lvl == 1) ? "PgUp PgDn Scroll" : (lvl < 4) ? "Scroll" : "") ((lvl < 4) ? " " pos : "")
     if (vw(k) <= w) break
   }
   return k
+}
+
+# A full-screen text view: header pinned at the top, CONT lines scrolled below it,
+# key bar on the last line. Returns the clamped scroll offset.
+function pinnedView(off,    W, i) {
+  W = cols - 3
+  for (i = 1; i <= NC; i++) CONT[i] = clipStyled(CONT[i], W)
+  NO = 0
+  emit(header(W))
+  off = viewport(off, rows - 2, W)
+  emit(keybar("view", 0, (MAXOFF > 0) ? posText(off, rows - 2) : "", W))
+  return off
+}
+
+# ---------- Health view ----------
+
+# One health check: mark, name, now, since-boot, target; advice below it when flagged.
+function hrow(lvl, name, now, boot, target, advice,    line, v) {
+  v = (lvl >= 2) ? paint(BOLD levelColor(lvl), now) : now
+  line = " " mark(lvl) " " padR(clip(name, HN), HN + 1) padL(v, 10)
+  if (HB) line = line padL(boot, 12)
+  line = line "   " target
+  emit(line)
+  if (lvl >= 2 && advice != "") emit(paint(ITAL, "      " clip(G_ARROW " " advice, HW - 6)))
+}
+
+function bootRate(name) { return (cur["Uptime"] > 0) ? formatRate(cur[name] / cur["Uptime"]) : "-" }
+
+function renderHealth(    W, lvl, x, n, eff) {
+  HW = cols - 3; HB = (HW >= 72); HN = (HW >= 72) ? 30 : HW - 32
+  if (HN < 14) HN = 14
+  emit(ptitle("HEALTH CHECKS", HW))
+  if (!up) { emit(" " mark(3) " MySQL is not responding: " clip(err, HW - 30)); return }
+  emit(paint(BOLD, " " padR("", HN + 2) padL("now " interval "s", 10) (HB ? padL("since boot", 12) : "") "   target"))
+
+  emit(paint(BOLD CYN, " InnoDB"))
+  hrow(low(hit_now, 99, 95), "Buffer pool hit ratio", pct2(hit_now), pct2(hit_boot), "> 99%",
+       sprintf("innodb_buffer_pool_size = %s. %s RAM available; try %s.", formatBytes(bp_size), formatBytes(mem_avail), formatBytes(bp_size + mem_avail / 2)))
+  hrow(high(r_wait, 0.001, 1), "Waits for free pool pages/s", formatRate(r_wait), bootRate("Innodb_buffer_pool_wait_free"), "0",
+       sprintf("The pool is too small for the working set: raise innodb_buffer_pool_size (now %s).", formatBytes(bp_size)))
+  hrow((cur["Innodb_buffer_pool_pages_free"] == 0) ? 2 : 1, "Buffer pool free", pct(bp_free_pct), "-", "> 0%",
+       "The pool is fully used. Fine while the hit ratio stays high; otherwise raise innodb_buffer_pool_size.")
+  hrow(high(r_logw, 0.001, 1), "InnoDB log waits/s", formatRate(r_logw), bootRate("Innodb_log_waits"), "0",
+       sprintf("innodb_log_buffer_size = %s. Try %s.", formatBytes(vars["innodb_log_buffer_size"]), formatBytes(vars["innodb_log_buffer_size"] * 2)))
+
+  emit(paint(BOLD CYN, " Connections"))
+  hrow(high(peak_pct, 85, 95), "Peak connection usage", pct(conn_pct), pct(peak_pct), "< 85%",
+       sprintf("max_connections = %d, peak %d. Raise it, or pool connections in the application.", maxc, cur["Max_used_connections"]))
+  x = (tc_now != "") ? tc_now : tc_boot
+  n = vars["thread_cache_size"]
+  hrow(low(x, 90, 50), "Thread cache hit ratio", pct(tc_now), pct(tc_boot), "> 90%",
+       sprintf("thread_cache_size = %d (%s threads created). Try %d.", n, formatNumber(cur["Threads_created"]), (n * 2 > 16) ? n * 2 : 16))
+  hrow(high(r_abort, 1, 10), "Aborted connections/s", formatRate(r_abort), bootRate("Aborted_connects"), "~0",
+       "Failed logins, timeouts or dropped clients: check wait_timeout, max_allowed_packet and the network.")
+
+  emit(paint(BOLD CYN, " Tables"))
+  x = (tbl_now != "") ? tbl_now : tbl_boot
+  hrow(low(x, 90, 50), "Table cache hit ratio", pct(tbl_now), pct(tbl_boot), "> 90%",
+       sprintf("table_open_cache = %d, Open_tables = %d. Try %d.", toc, cur["Open_tables"], toc * 2))
+  x = (vars["open_files_limit"] > 0) ? 100 * cur["Open_files"] / vars["open_files_limit"] : ""
+  hrow(high(x, 85, 95), "Open files", pct(x), "-", "< 85%",
+       sprintf("open_files_limit = %d. Raise it (and the OS limit for mysqld).", vars["open_files_limit"]))
+  hrow(high(r_lockw, 0.001, 1), "Table lock waits/s", formatRate(r_lockw), bootRate("Table_locks_waited"), "0",
+       "Table-level locks: MyISAM tables? Convert them to InnoDB.")
+  hrow(high(rate("Key_reads"), 1, 100), "MyISAM key reads/s", formatRate(rate("Key_reads")), bootRate("Key_reads"), "0",
+       sprintf("MyISAM is in use (key_buffer_size = %s). Migrate those tables to InnoDB.", formatBytes(vars["key_buffer_size"])))
+
+  emit(paint(BOLD CYN, " Queries"))
+  hrow(high(r_slow, 1, 10), "Slow queries", pct2(slow_now), pct2(slow_boot), "~0%",
+       "Find the statements in the slow query log and fix their plans or indexes.")
+  x = toupper(svars["slow_query_log"])
+  hrow((x == "") ? 0 : (x == "ON" || x == "1") ? 1 : 2, "Slow query log", (x == "") ? "-" : x, "-", "ON",
+       sprintf("SET GLOBAL slow_query_log = 1; long_query_time = %s%s", vars["long_query_time"] + 0,
+               (vars["long_query_time"] >= 10) ? " is high: try 1-2s." : "."))
+  hrow(high(r_fj, 1, 10), "Joins without indexes/s", formatRate(r_fj), bootRate("Select_full_join"), "~0",
+       "Add indexes on the joined columns (Select_full_join).")
+  x = (tmp_now != "") ? tmp_now : tmp_boot
+  eff = (vars["tmp_table_size"] < vars["max_heap_table_size"]) ? vars["tmp_table_size"] : vars["max_heap_table_size"]
+  hrow(high(x, 25, 50), "Temp tables on disk", pct(tmp_now), pct(tmp_boot), "< 25%",
+       sprintf("tmp_table_size / max_heap_table_size = %s / %s (the smaller applies). Try doubling both; BLOB/TEXT columns always spill to disk.",
+               formatBytes(vars["tmp_table_size"]), formatBytes(vars["max_heap_table_size"])))
+  hrow(high(r_smp, 1, 10), "Sort merge passes/s", formatRate(r_smp), bootRate("Sort_merge_passes"), "~0",
+       sprintf("sort_buffer_size = %s. Raise it cautiously: it is allocated per sort.", formatBytes(vars["sort_buffer_size"])))
+
+  emit(paint(BOLD CYN, " System"))
+  hrow(low(mem_avail_pct, 10, 5), "Memory available", pct(mem_avail_pct), "-", "> 10%",
+       sprintf("Only %s free for the OS and page cache. Lower innodb_buffer_pool_size or add RAM.", formatBytes(mem_avail)))
+  hrow(high(swap_pct, 20, 50), "Swap in use", pct(swap_pct), "-", "0%",
+       sprintf("%s swapped. Lower vm.swappiness and keep memory headroom for mysqld.", formatBytes(swap_used)))
+  hrow(high(cpu_pct, 80, 95), "CPU", pct(cpu_pct), "-", "< 80%", "Sustained high CPU: look at the active queries and their plans.")
+
+  emit("")
+  emit(paint(ITAL, " Server up " shortTime(cur["Uptime"]) ". Since-boot figures need a day of normal traffic to mean much;"))
+  emit(paint(ITAL, " 'now' ratios appear once an interval holds enough events to judge."))
+}
+
+# ---------- Help view ----------
+
+function helpKey(k, text) { emit("   " padR(paint(INV, " " k " "), 12 + (color ? 11 : 0)) text) }
+
+function renderHelp(    W) {
+  W = cols - 3
+  emit(ptitle("HELP", W))
+  emit(paint(BOLD CYN, " Keys"))
+  helpKey("q", "Quit")
+  helpKey("?", "This help")
+  helpKey("h", "Health checks with tuning advice")
+  helpKey("r", "Raw counters: the classic table")
+  helpKey("d", "Details: every counter and description (when the dashboard had to leave some out)")
+  helpKey(G_UP G_DOWN, "Scroll a view that is taller than the window (also j k, PgUp PgDn, Home End)")
+  helpKey("Esc", "Back to the dashboard")
+  emit("")
+  emit(paint(BOLD CYN, " Marks"))
+  emit("   " mark(1) " healthy    " mark(2) " worth a look    " mark(3) " act on this")
+  emit("   Values that need attention are shown in bold " paint(YEL, "yellow") " or " paint(RED, "red") ".")
+  emit("")
+  emit(paint(BOLD CYN, " Numbers"))
+  emit("   Rates (/s) are measured between refreshes; 'avg' and 'total' count since the server started.")
+  emit("   Hit ratios show the current interval, or 'since boot' until an interval holds enough events.")
+  emit("   Sparklines show the last " HIST_MAX " refreshes. Bars show usage of a configured limit, such as")
+  emit("   max_connections or table_open_cache. The layout adapts to the window: resize it to see more.")
+  emit("")
+  emit(paint(BOLD CYN, " Command line"))
+  emit("   " padR("mysqlmonitor.sh [interval]", 32) "Refresh every N seconds (default 5)")
+  emit("   " padR("--help", 32) "Usage and keys")
+  emit("")
+  emit("   Credentials: ~/.my.cnf with [client] user= and password= (chmod 600), or run as root.")
+  emit("   Set NO_COLOR=1 to disable colours. Non-UTF-8 terminals get an ASCII version.")
 }
 
 function buildPanels(    p) {
@@ -788,11 +968,11 @@ BEGIN {
   }
   if (unicode) {
     G_FULL = "█"; G_EMPTY = "░"; G_OK = "✓"; G_WARN = "⚠"; G_CRIT = "✗"
-    G_DOT = "●"; G_SEP = "▸"; G_H = "─"; G_V = "│"; G_ELL = "…"; G_UP = "↑"; G_DOWN = "↓"
+    G_DOT = "●"; G_SEP = "▸"; G_H = "─"; G_V = "│"; G_ELL = "…"; G_UP = "↑"; G_DOWN = "↓"; G_ARROW = "→"
     split("_ ▁ ▂ ▃ ▄ ▅ ▆", SPK, " "); SPK[1] = " "
   } else {
     G_FULL = "#"; G_EMPTY = "."; G_OK = "+"; G_WARN = "!"; G_CRIT = "x"
-    G_DOT = "*"; G_SEP = ">"; G_H = "-"; G_V = "|"; G_ELL = "~"; G_UP = "Up"; G_DOWN = "Dn"
+    G_DOT = "*"; G_SEP = ">"; G_H = "-"; G_V = "|"; G_ELL = "~"; G_UP = "Up"; G_DOWN = "Dn"; G_ARROW = "->"
     split("_ _ - = + * #", SPK, " "); SPK[1] = " "
   }
 
@@ -814,7 +994,9 @@ BEGIN {
         "Threads_cached Threads_connected Threads_running Uptime", g, " ")
   for (i in g) gauge[g[i]] = 1
 
-  split("innodb_buffer_pool_size innodb_page_size max_connections table_open_cache hostname version", v, " ")
+  split("innodb_buffer_pool_size innodb_page_size max_connections table_open_cache hostname version " \
+        "thread_cache_size tmp_table_size max_heap_table_size slow_query_log long_query_time " \
+        "innodb_log_buffer_size open_files_limit sort_buffer_size key_buffer_size", v, " ")
   for (i in v) wanted_var[v[i]] = 1
 
   desc["Aborted_clients"]                  = "Failed client connections."
@@ -1042,6 +1224,12 @@ END {
     emit(keybar("raw", 0, (MAXOFF > 0) ? posText(SCROLL_OUT, rows - 1) : "", cols - 1))
     CHOSEN = "raw"
   }
+  else if (view == "health" || view == "help") {
+    if (view == "health") renderHealth(); else renderHelp()
+    NC = NO; for (i = 1; i <= NO; i++) CONT[i] = OUT[i]
+    SCROLL_OUT = pinnedView(scroll)
+    CHOSEN = view
+  }
   else if (details) SCROLL_OUT = layoutDetails(scroll)
   else layoutBest()
   for (i = 1; i <= NO; i++) print OUT[i]
@@ -1149,11 +1337,13 @@ apply_key() {
   case $KEY in
     q|Q) exit 0 ;;
     r|R) if [[ $VIEW == raw ]]; then VIEW=dashboard; else VIEW=raw; fi; SCROLL=0 ;;
+    h|H) if [[ $VIEW == health ]]; then VIEW=dashboard; else VIEW=health; fi; SCROLL=0 ;;
+    '?') if [[ $VIEW == help ]]; then VIEW=dashboard; else VIEW=help; fi; SCROLL=0 ;;
     d|D)
       [[ $VIEW == dashboard ]] || return 1
       if (( DETAILS )); then DETAILS=0; elif (( MORE )); then DETAILS=1; else return 1; fi
       SCROLL=0 ;;
-    esc) [[ $VIEW == dashboard ]] && (( DETAILS )) || return 1; DETAILS=0; SCROLL=0 ;;
+    esc) [[ $VIEW != dashboard ]] || (( DETAILS )) || return 1; VIEW=dashboard; DETAILS=0; SCROLL=0 ;;
     down|j) (( SCROLL < MAXOFF )) || return 1; (( SCROLL += 1 )) ;;
     pgdn)   (( SCROLL < MAXOFF )) || return 1; (( SCROLL += page )) ;;
     end)    (( SCROLL < MAXOFF )) || return 1; SCROLL=$MAXOFF ;;
