@@ -681,12 +681,12 @@ function procBefore(a, b) {
 
 # Builds PO: the processes to list, after the sleeper/filter options, in sort order.
 function selectProcs(    i, j, t, c, f, hay) {
-  NPO = 0; nrun = 0
+  NPO = 0; nrun = 0; nsys = 0; nself = 0
   f = tolower(pfilter)
   for (i = 1; i <= np; i++) {
     c = pcmd[i]
-    if (c == "Daemon" || c ~ /^Binlog Dump/ || puser[i] == "system user" || puser[i] == "event_scheduler") continue
-    if (tolower(pinfo[i]) ~ /^show (full )?processlist/) continue
+    if (c == "Daemon" || c ~ /^Binlog Dump/ || puser[i] == "system user" || puser[i] == "event_scheduler") { nsys++; continue }
+    if (tolower(pinfo[i]) ~ /^show (full )?processlist/) { nself++; continue }
     if (c != "Sleep") nrun++
     if (c == "Sleep" && !psleep) continue
     if (f != "") {
@@ -719,8 +719,8 @@ function renderProcs(sel, off,    W, wide, i, k, lvl, t, h, line, vh, hdr, last)
   wide = (W >= 100)
   NO = 0
   emit(header(W))
-  emit(ptitle(clip(sprintf("PROCESSES  %d shown   %d running, %d sleeping%s   sort: %s%s", NPO, nrun, nsleep,
-                      psleep ? "" : " (hidden)", (psort == "") ? "time" : psort,
+  emit(ptitle(clip(sprintf("PROCESSES  %d shown   %d running, %d sleeping%s   hidden: this monitor%s   sort: %s%s", NPO, nrun, nsleep,
+                      psleep ? "" : " (hidden)", (nsys > 0) ? " + " nsys " system" : "", (psort == "") ? "time" : psort,
                       (pfilter != "" && !pedit) ? "   filter: " pfilter : ""), W - 4), W))
   hdr = "   " padR("ID", 9) padR("USER", 11) (wide ? padR("HOST", 16) : "") padR("DB", 13) (wide ? padR("CMD", 8) : "") \
         padL("TIME", 7) "  " (wide ? padR("STATE", 20) : "") "QUERY"
@@ -739,7 +739,8 @@ function renderProcs(sel, off,    W, wide, i, k, lvl, t, h, line, vh, hdr, last)
     if (k == sel) CONT[++NC] = paint(INV, " " G_PTR " " padR(line, W - 3))
     else CONT[++NC] = " " mark(lvl) " " line
   }
-  if (NPO == 0) CONT[++NC] = " " mark(1) " " paint(GRN, (pfilter != "") ? "No processes match the filter" : "No client processes")
+  if (NPO == 0) CONT[++NC] = " " mark(1) " " paint(GRN, (pfilter != "") ? "No processes match the filter" : \
+                               "No client processes right now" ((nself == 0 && np == 0) ? " (processlist empty: PROCESS privilege?)" : ""))
   vh = rows - 4; if (vh < 1) vh = 1
   if (sel > 0) { if (sel - 1 < off) off = sel - 1; if (sel > off + vh) off = sel - vh }
   off = viewport(off, vh, W)
