@@ -214,7 +214,7 @@ function emitQueries(w, qrows,    wide, hdr, i, k, lvl, t, line, used) {
   wide = (w >= 96)
   hdr = "   " padR("ID", 9) padR("USER", 11) (wide ? padR("HOST", 16) : "") padR("DB", 13) padL("TIME", 7) "  " \
         (wide ? padR("STATE", 18) : "") "QUERY"
-  emit(paint(BOLD, hdr))
+  emit(paint(BOLD, clip(hdr, w)))
   if (NQ == 0) { emit(" " mark(1) " " paint(GRN, "No active queries")); return }
   for (k = 1; k <= NQ && k <= qrows; k++) {
     if (k == qrows && NQ > qrows) { emit("   +" (NQ - k + 1) " more"); return }
@@ -653,6 +653,7 @@ function fit(layout, colw,    budget, spare, gap, qrows) {
     if (qrows > ((NQ > 0) ? NQ : 1)) qrows = (NQ > 0) ? NQ : 1
   }
   if (budget > 1 || qrows > 0) build(layout, colw, budget, qrows)
+  QROWS = qrows
   return 1
 }
 
@@ -668,10 +669,11 @@ function layoutBest(    c, cand, cf, minw, maxw, n, colw) {
     colw = int((cols - 1 - 2 * (n - 1)) / n)
     maxw = SHOW_DESC ? 120 : (n == 1) ? 80 : 64
     if (colw > maxw) colw = maxw
-    if (fit(n, colw)) return
+    if (fit(n, colw)) { CHOSEN = n " col" ((SHOW_DESC) ? " +desc" : "") ((SHOW_DETAIL) ? " +detail" : ""); return }
   }
   SHOW_DESC = 0; SHOW_DETAIL = 0
   fit(0, 0)
+  CHOSEN = "compact"
 }
 
 BEGIN {
@@ -926,6 +928,8 @@ END {
   if (view == "raw") renderRaw()
   else layoutBest()
   for (i = 1; i <= NO; i++) print OUT[i]
+  # Layout report for the size test harness (-v debug=1)
+  if (debug) printf "LAYOUT %s|%d|%d\n", CHOSEN, NO, QROWS > "/dev/stderr"
 
   print "@@STATE"
   printf "T %.0f\n", now
