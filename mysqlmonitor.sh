@@ -153,8 +153,81 @@ function vw(s,    t) {
 function rep(ch, n,    s) { s = ""; while (n-- > 0) s = s ch; return s }
 function padR(s, w) { return s rep(" ", w - vw(s)) }
 function padL(s, w) { return rep(" ", w - vw(s)) s }
-# Shortens plain (unstyled) text to w columns.
-function clip(s, w) { return (vw(s) <= w) ? s : substr(s, 1, w - 1) G_ELL }
+# Shortens plain (unstyled) text to w columns without splitting a UTF-8 character.
+function clip(s, w,    i, n, c, out) {
+  if (vw(s) <= w) return s
+  n = 0; out = ""
+  for (i = 1; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (c !~ /[\200-\277]/ && ++n > w - 1) break
+    out = out c
+  }
+  return out G_ELL
+}
+
+# Text from the server (queries, users, hosts) can contain anything: drop control
+# characters so it can't move the cursor or change colours, and collapse whitespace.
+function clean(s) {
+  gsub(/[\001-\037\177]/, " ", s)
+  gsub(/  +/, " ", s)
+  return trim(s)
+}
+
+# Stores one processlist row. A "|" inside the query splits Info into extra fields,
+# so everything between Info and the columns after it is joined back together.
+function addProcess(f, n,    extra, ii, k, info) {
+  extra = n - (pcols + 2)
+  ii = pcol["Info"] + 1
+  info = f[ii]
+  for (k = 1; k <= extra; k++) info = info "|" f[ii + k]
+  np++
+  pid[np] = clean(f[pcol["Id"] + 1]); puser[np] = clean(f[pcol["User"] + 1])
+  phost[np] = clean(f[pcol["Host"] + 1]); pdb[np] = clean(f[pcol["db"] + 1])
+  pcmd[np] = clean(f[pcol["Command"] + 1]); ptime[np] = clean(f[pcol["Time"] + 1]) + 0
+  pstate[np] = clean(f[pcol["State"] + 1]); pinfo[np] = info
+}
+
+# Picks the queries worth showing, longest-running first: no idle connections,
+# background threads, replication dumps, or this monitor's own processlist call.
+function selectQueries(    i, j, t, c) {
+  NQ = 0; nsleep = 0
+  for (i = 1; i <= np; i++) {
+    pinfo[i] = clean(pinfo[i])
+    c = pcmd[i]
+    if (c == "Sleep") { nsleep++; continue }
+    if (c == "Daemon" || c ~ /^Binlog Dump/ || puser[i] == "system user" || puser[i] == "event_scheduler") continue
+    if (tolower(pinfo[i]) ~ /^show (full )?processlist/) continue
+    QO[++NQ] = i
+  }
+  for (i = 2; i <= NQ; i++) {
+    t = QO[i]
+    for (j = i - 1; j >= 1 && ptime[QO[j]] < ptime[t]; j--) QO[j + 1] = QO[j]
+    QO[j + 1] = t
+  }
+}
+
+function fmtDur(sec) { return (sec < 60) ? sec "s" : (sec < 3600) ? int(sec / 60) "m" sprintf("%02d", sec % 60) "s" : shortTime(sec) }
+
+# Live queries below the panels, sized to the rows left over (qrows lines of queries).
+function emitQueries(w, qrows,    wide, hdr, i, k, lvl, t, line, used) {
+  emit(ptitle(sprintf("ACTIVE QUERIES  %d running, %d sleeping", NQ, nsleep), w))
+  wide = (w >= 96)
+  hdr = "   " padR("ID", 9) padR("USER", 11) (wide ? padR("HOST", 16) : "") padR("DB", 13) padL("TIME", 7) "  " \
+        (wide ? padR("STATE", 18) : "") "QUERY"
+  emit(paint(BOLD, hdr))
+  if (NQ == 0) { emit(" " mark(1) " " paint(GRN, "No active queries")); return }
+  for (k = 1; k <= NQ && k <= qrows; k++) {
+    if (k == qrows && NQ > qrows) { emit("   +" (NQ - k + 1) " more"); return }
+    i = QO[k]; t = ptime[i]
+    lvl = (t >= 60) ? 3 : (t >= 10) ? 2 : 0
+    line = " " mark(lvl) " " padR(clip(pid[i], 8), 9) padR(clip(puser[i], 10), 11)
+    if (wide) { sub(/:[0-9]+$/, "", phost[i]); line = line padR(clip(phost[i], 15), 16) }
+    line = line padR(clip(pdb[i], 12), 13) padL((lvl >= 2) ? paint(BOLD levelColor(lvl), fmtDur(t)) : fmtDur(t), 7) "  "
+    if (wide) line = line padR(clip(pstate[i], 17), 18)
+    used = vw(line)
+    emit(line clip((pinfo[i] != "") ? pinfo[i] : pcmd[i], w - used))
+  }
+}
 function paint(c, s) { return (c == "" || s == "") ? s : c s RST }
 
 # Severity levels: 0 none, 1 ok, 2 warning, 3 critical
@@ -480,32 +553,60 @@ function emitAlerts(budget, w,    lvl, i, shown) {
     }
 }
 
-# Panels in n columns of width colw, filled left to right, top to bottom.
-function layoutGrid(n, colw, budget,    w, i, j, k, h, line, seg) {
+# Assigns panels to n columns, keeping their order within each column, so that the
+# tallest column is as short as possible. Tries every assignment (at most 3^6 = 729).
+function arrange(n, sep,    total, k, x, i, c, h, used, ok, mx, best) {
+  total = 1; for (i = 1; i <= NP; i++) total *= n
+  best = -1
+  for (k = 0; k < total; k++) {
+    x = k; used = 0; ok = 1
+    for (c = 1; c <= n; c++) h[c] = 0
+    for (i = 1; i <= NP; i++) {
+      c = x % n + 1; x = int(x / n)
+      # Canonical form: column c is only used after column c-1 (skips mirror images)
+      if (c > used + 1) { ok = 0; break }
+      if (c > used) used = c
+      h[c] += PN[ORDER[i]] + ((h[c] > 0) ? sep : 0)
+      TRY[i] = c
+    }
+    if (!ok || (used < n && NP >= n)) continue
+    mx = 0; for (c = 1; c <= n; c++) if (h[c] > mx) mx = h[c]
+    if (best < 0 || mx < best) { best = mx; for (i = 1; i <= NP; i++) COLOF[i] = TRY[i] }
+  }
+}
+
+# Panels packed into n columns of width colw, then live queries if qrows > 0.
+function layoutGrid(n, colw, budget, qrows,    w, sep, i, j, c, H, line, seg) {
   NO = 0
   PW = colw; setWidths(colw, 0); buildPanels()
   w = n * colw + 2 * (n - 1)
+  sep = (n > 1)
   emit(header(w))
-  if (n > 1) emit("")
-  for (i = 1; i <= NP; i += n) {
-    h = 0
-    for (k = i; k < i + n && k <= NP; k++) if (PN[ORDER[k]] > h) h = PN[ORDER[k]]
-    for (j = 1; j <= h; j++) {
-      line = ""
-      for (k = i; k < i + n && k <= NP; k++) {
-        seg = (j <= PN[ORDER[k]]) ? P[ORDER[k], j] : ""
-        line = (k == i) ? seg : padR(line, (k - i) * (colw + 2)) seg
-      }
-      emit(line)
-    }
-    if (n > 1) emit("")
+  if (sep) emit("")
+  arrange(n, sep)
+  for (c = 1; c <= n; c++) CH[c] = 0
+  for (i = 1; i <= NP; i++) {
+    c = COLOF[i]
+    if (CH[c] > 0 && sep) COL[c, ++CH[c]] = ""
+    for (j = 1; j <= PN[ORDER[i]]; j++) COL[c, ++CH[c]] = P[ORDER[i], j]
   }
+  H = 0; for (c = 1; c <= n; c++) if (CH[c] > H) H = CH[c]
+  for (j = 1; j <= H; j++) {
+    line = ""
+    for (c = 1; c <= n; c++) {
+      seg = (j <= CH[c]) ? COL[c, j] : ""
+      line = (c == 1) ? seg : padR(line, (c - 1) * (colw + 2)) seg
+    }
+    emit(line)
+  }
+  if (sep) emit("")
+  if (qrows > 0) { emitQueries(w, qrows); if (sep) emit("") }
   emit(ptitle("ALERTS", w)); emitAlerts(budget, w)
-  if (n > 1) emit("")
+  if (sep) emit("")
   emit(keybar())
 }
 
-function layoutCompact(budget,    colw, sep) {
+function layoutCompact(budget, qrows,    colw, sep) {
   NO = 0
   colw = int((cols - 4) / 2); if (colw > 44) colw = 44
   setWidths(colw, 1)
@@ -523,6 +624,7 @@ function layoutCompact(budget,    colw, sep) {
   } else {
     emit(L(3, "MySQL", "DOWN", "", clip(err, 2 * colw - 20)))
   }
+  if (qrows > 0) emitQueries(2 * colw + 3, qrows)
   emitAlerts(budget, 2 * colw + 3)
   emit(keybar())
 }
@@ -530,14 +632,27 @@ function layoutCompact(budget,    colw, sep) {
 # Layouts stay at least one column narrower than the terminal: with wrapping off, the
 # erase-to-end-of-line after each line would wipe a character in the last column.
 
-# Lays out with one alert line to measure the height; if it fits, rebuilds giving the
-# spare rows to the alerts list. layout: 0 = compact, otherwise the number of columns.
-function fit(layout, colw,    budget) {
-  if (layout) layoutGrid(layout, colw, 1); else layoutCompact(1)
+function build(layout, colw, budget, qrows) {
+  if (layout) layoutGrid(layout, colw, budget, qrows); else layoutCompact(budget, qrows)
+}
+
+# Measures the layout with one alert line and no queries. If it fits, spare rows go
+# first to extra alerts (up to 8 in all), then to the active queries panel.
+# layout: 0 = compact, otherwise the number of columns.
+function fit(layout, colw,    budget, spare, gap, qrows) {
+  build(layout, colw, 1, 0)
   if (NO > rows) return 0
-  budget = rows - NO + 1
-  if (budget > 8) budget = 8
-  if (budget > 1) { if (layout) layoutGrid(layout, colw, budget); else layoutCompact(budget) }
+  spare = rows - NO
+  budget = (NAL > 8) ? 8 : (NAL > 1) ? NAL : 1
+  if (budget - 1 > spare) budget = spare + 1
+  spare -= budget - 1
+  gap = (layout > 1) ? 1 : 0
+  qrows = 0
+  if (up && spare >= 3 + gap) {
+    qrows = spare - 2 - gap
+    if (qrows > ((NQ > 0) ? NQ : 1)) qrows = (NQ > 0) ? NQ : 1
+  }
+  if (budget > 1 || qrows > 0) build(layout, colw, budget, qrows)
   return 1
 }
 
@@ -654,8 +769,19 @@ section == "CUR" {
     n = split($0, f, "|")
     name = trim(f[2]); val = trim(f[3])
     if (name == "Variable_name") { tables++; next }
+    if (name == "Id") {
+      # Processlist header: map column names (MariaDB adds Progress after Info)
+      tables = 3; pcols = n - 2
+      for (i = 2; i < n; i++) pcol[trim(f[i])] = i - 1
+      next
+    }
     if (tables == 1 && (name in wanted)) cur[name] = val + 0
     else if (tables == 2 && (name in wanted_var)) { vars[name] = val + 0; svars[name] = val }
+    else if (tables == 3) addProcess(f, n)
+  } else if (tables == 3 && $0 !~ /^\+/) {
+    # Continuation of a multi-line query: keep the text, drop the trailing columns
+    line = $0; sub(/ *\|.*$/, "", line)
+    if (np > 0) pinfo[np] = pinfo[np] " " line
   } else if ($0 !~ /^\+/ && $0 != "") {
     err = (err == "") ? $0 : err " " $0
   }
@@ -793,6 +919,8 @@ END {
   nwarn = 0
   for (i = 1; i <= NAL; i++) if (ALV[i] == 2) nwarn++
 
+  selectQueries()
+
   # ---------- Output ----------
   NO = 0
   if (view == "raw") renderRaw()
@@ -813,7 +941,7 @@ fetch() {
   now_us; sample_time=$REPLY
   printf -v clock '%(%H:%M:%S)T' -1
   sample=$(
-    mysqladmin extended-status variables 2>&1
+    mysqladmin extended-status variables processlist 2>&1
     printf '@@MEMINFO\n'
     [[ -r /proc/meminfo ]] && printf '%s\n' "$(</proc/meminfo)"
     printf '@@CPU\n'
@@ -830,7 +958,13 @@ render() {
   local out
   out=$(LC_ALL=C awk -v title="$TITLE" -v rows="$rows" -v cols="$cols" -v view="$VIEW" \
           -v interval="$INTERVAL" -v clock="$clock" -v unicode="$UNICODE" -v color="$COLOR" \
-          "$RENDER_AWK" <<< "@@TIME $sample_time"$'\n'"@@PREV"$'\n'"$prev_state"$'\n'"@@CUR"$'\n'"$sample")
+          "$RENDER_AWK" <<< "@@TIME $sample_time"$'\n'"@@PREV"$'\n'"$prev_state"$'\n'"@@CUR"$'\n'"$sample" 2>&1)
+  if [[ $out != *$'\n'@@STATE* ]]; then
+    # awk failed: show its error instead of a blank screen, and keep the previous state
+    frame="Internal error while drawing the screen:"$'\n'"$out"
+    next_state=$prev_state
+    return
+  fi
   frame=${out%%$'\n'@@STATE*}
   next_state=${out#*@@STATE$'\n'}
 }

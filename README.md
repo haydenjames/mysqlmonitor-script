@@ -40,7 +40,7 @@ Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblo
 ## What you see
 A dashboard grouped into panels: throughput, connections, InnoDB buffer pool, temp tables & sorts, tables & locks, and system. Rates are per second since the last refresh, with sparklines of recent history, bars against configured limits (`max_connections`, `table_open_cache`) and ✓ / ⚠ / ✗ marks. An alerts box explains what needs attention and which setting to look at.
 
-The layout adapts to the terminal and shows as much as fits: up to three columns, detail lines with every counter's rate and total since boot when there are enough rows, a description of each metric when there is enough width, and a compact summary that fits 80×24.
+The layout adapts to the terminal and shows as much as fits: up to three columns, detail lines with every counter's rate and total since boot when there are enough rows, a description of each metric when there is enough width, and a compact summary that fits 80×24. Panels are packed into columns by height, and any rows left over show the active queries, longest-running first (idle connections and background threads are hidden).
 
 | Key | Action |
 | --- | --- |
@@ -51,6 +51,8 @@ Set `NO_COLOR=1` to disable colors. Non-UTF-8 terminals get an ASCII version aut
 
 ## Requirements
 `bash`, `mysqladmin` and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.
+
+To see other users' queries in the active queries panel, the MySQL user needs the `PROCESS` privilege (root has it). Without it, only that user's own queries are listed.
 
 ## Terminal size
 The screen is redrawn in place, so it no longer scrolls or flickers. If the window is too small to fit everything, the script tells you the size it needs and redraws as soon as you resize.
