@@ -203,14 +203,14 @@ function pushHist(key, val,    n, a, i, s) {
   hist[key] = s
 }
 
-# One metric line: status mark, label, value, optional graphic, dim suffix and, when the
+# One metric line: status mark, label, bold value, optional graphic, suffix and, when the
 # layout has room (SHOW_DESC), a description column.
 function L(lvl, label, value, graphic, suffix, desc,    s) {
-  s = " " mark(lvl) " " padR(label, LW) padL(value, VWD)
+  s = " " mark(lvl) " " padR(label, LW) padL(paint(BOLD, value), VWD)
   if (SHOW_DESC && desc != "")
-    return s "  " padR(graphic, GW) "  " padR(paint(DIM, suffix), SW) "  " paint(DIM ITAL, clip(desc, DW))
+    return s "  " padR(graphic, GW) "  " padR(suffix, SW) "  " paint(ITAL, clip(desc, DW))
   if (graphic != "") s = s "  " graphic
-  if (suffix != "") s = s "  " paint(DIM, suffix)
+  if (suffix != "") s = s "  " suffix
   return s
 }
 
@@ -465,13 +465,13 @@ function buildPanels(    p) {
 
 # Alerts, worst first, clipped to w columns. budget = lines available; an overflow line replaces the last one.
 function emitAlerts(budget, w,    lvl, i, shown) {
-  if (NAL == 0) { emit(" " mark(1) " " paint(DIM, "No issues detected")); return }
+  if (NAL == 0) { emit(" " mark(1) " " paint(GRN, "No issues detected")); return }
   shown = 0
   for (lvl = 3; lvl >= 2; lvl--)
     for (i = 1; i <= NAL; i++) {
       if (ALV[i] != lvl) continue
       if (shown == budget - 1 && NAL > budget) {
-        emit("   " paint(DIM, "+" (NAL - shown) " more"))
+        emit("   +" (NAL - shown) " more")
         return
       }
       emit(" " mark(lvl) " " clip(AL[i], w - 3))
@@ -561,6 +561,8 @@ function layoutBest(    c, cand, cf, minw, maxw, n, colw) {
 BEGIN {
   HIST_MAX = 60
 
+  # Dim is kept for decoration only (bar tracks, separators, rules): many terminal themes
+  # render it too dark to read, so text hierarchy comes from bold values and italic descriptions.
   if (color) {
     RED = "\033[31m"; GRN = "\033[32m"; YEL = "\033[33m"; CYN = "\033[36m"
     DIM = "\033[2m"; BOLD = "\033[1m"; ITAL = "\033[3m"; INV = "\033[7m"; RST = "\033[0m"
