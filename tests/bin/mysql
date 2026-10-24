@@ -1,6 +1,20 @@
 #!/bin/bash
 # Fake mysql client: answers the digest query with counters that grow with time.
 t=$(( $(date +%s) - 1761000000 ))
+if [[ " $* " == *"PROCESSLIST"* ]]; then
+  el=$(( t % 100 ))
+  p() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
+  p Id User Host db Command Time State Info Progress
+  p 1 "system user" "" NULL Daemon NULL "InnoDB purge coordinator" NULL 0.000
+  p 5 event_scheduler localhost NULL Daemon 9999 "Waiting on empty queue" NULL 0.000
+  p 48211 wp localhost:41234 stack_wp Query $((el + 3)) "Sending data" "SELECT option_name, option_value FROM wp_options WHERE autoload = 'yes' AND option_name LIKE '%transient%'" 0.000
+  p 48230 wp 10.0.0.5:5523 stack_wp Query 0 "Creating sort index" "SELECT * FROM wp_posts WHERE a='x|y' ORDER BY post_date" 0.000
+  p 48240 app 10.0.0.9:6000 shop Query 75 "Copying to tmp table" 'SELECT o.id,\n    c.name FROM orders o\n    JOIN customers c ON c.id = o.cid' 0.000
+  p 48250 evil localhost shop Query 1 executing $'SELECT "\033[2J\033[31mPWNED"' 0.000
+  for i in 1 2 3; do p 4900$i wp localhost stack_wp Sleep 12 "" NULL 0.000; done
+  p 49999 root localhost NULL Query 0 starting "SHOW FULL PROCESSLIST" 0.000
+  exit 0
+fi
 r() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
 r a1b2c3 shop $((500000 + t*380)) $((600000000000000 + t*400000000000)) 84000000000 $((900000000 + t*900000)) $((800000 + t*380)) 0 0 0 1000000000 "SELECT \`option_name\` , \`option_value\` FROM \`wp_options\` WHERE \`autoload\` = ?"
 r d4e5f6 shop $((20000 + t*12)) $((300000000000000 + t*180000000000)) 2400000000000 $((2000000000 + t*4000000)) $((20000 + t*12)) $((300 + t/5)) 0 0 0 "SELECT \`o\` . \`id\` , \`c\` . \`name\` FROM \`orders\` \`o\` JOIN \`customers\` \`c\` ON \`c\` . \`id\` = \`o\` . \`cid\` WHERE \`o\` . \`status\` = ?"

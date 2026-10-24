@@ -7,7 +7,8 @@ src = open(M).read()
 awk_prog = src.split("read -r -d '' RENDER_AWK <<'AWK'\n", 1)[1].split("\nAWK\n", 1)[0]
 env = dict(os.environ, PATH=f"{S}/bin:" + os.environ["PATH"])
 def sample():
-    out = subprocess.run(["mysqladmin", "extended-status", "variables", "processlist"], capture_output=True, text=True, env=env).stdout
+    out = subprocess.run(["mysqladmin", "extended-status", "variables"], capture_output=True, text=True, env=env).stdout
+    out += "@@PLIST\n" + subprocess.run(["mysql", "-B", "-e", "SHOW FULL PROCESSLIST"], capture_output=True, text=True, env=env).stdout
     mem = open("/proc/meminfo").read()
     cpu = "".join(l for l in open("/proc/stat") if l.startswith("cpu"))
     top = subprocess.run(["mysql", "-B", "-N", "-e", "x"], capture_output=True, text=True, env=env).stdout

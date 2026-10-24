@@ -111,6 +111,10 @@ ORDER BY SUM_TIMER_WAIT DESC LIMIT 250"
 MYSQL_CLI=""
 for c in mariadb mysql; do command -v "$c" &>/dev/null && { MYSQL_CLI=$c; break; }; done
 mtop() { command "$MYSQL_CLI" "${MYSQL_ARGS[@]}" --connect-timeout=5 -B -N -e "${1:-$TOP_SQL}"; }
+# The process list through the client: one tab-separated row per process with newlines
+# and tabs inside queries escaped, so rows cannot be forged by query text, and the full
+# statement instead of mysqladmin's 100-character cut. Header line included (-B without -N).
+mplist() { command "$MYSQL_CLI" "${MYSQL_ARGS[@]}" --connect-timeout=5 -B -e "SHOW FULL PROCESSLIST"; }
 
 # Test if MySQL command requiring credentials succeeds
 if ! output=$(madmin status 2>&1); then
@@ -143,6 +147,10 @@ if ! output=$(madmin status 2>&1); then
     exit 1
   fi
 fi
+
+# Is the client usable with these credentials? Then it supplies the process list.
+CLI_OK=0
+[[ -n $MYSQL_CLI ]] && mtop "SELECT 1" >/dev/null 2>&1 && CLI_OK=1
 
 # Can the top-queries view work here? Decided once; the view explains any failure.
 TOPQ=0; TOP_ERR=""
@@ -1484,7 +1492,7 @@ section == "CUR" {
     }
     if (tables == 1 && (name in wanted)) { cur[name] = val + 0; have[name] = 1 }
     else if (tables == 2 && (name in wanted_var)) { vars[name] = val + 0; svars[name] = clean(val) }
-    else if (tables == 3 && n - 2 >= pcols && name ~ /^[0-9]+$/) addProcess(f, n)
+    else if (tables == 3 && name ~ /^[0-9]+$/ && n >= pcol["Info"] + 1 && trim(f[pcol["Time"] + 1]) ~ /^[0-9]*$/) addProcess(f, n)
     else if (tables == 3) contLine($0)
   } else if (tables == 3 && $0 !~ /^\+/) {
     contLine($0)
@@ -1501,6 +1509,23 @@ function contLine(l,    k, tail) {
   tail = pcols - pcol["Info"]
   for (k = 0; k <= tail; k++) sub(/ *\|[^|]*$/, "", l)
   pinfo[np] = pinfo[np] " " l
+}
+
+# Process list from the client (tab-separated, header first). Batch mode escapes
+# newlines, tabs and backslashes inside values, so one line is always one process.
+section == "PLIST" {
+  n = split($0, f, "\t")
+  if (f[1] == "Id") { for (i = 1; i <= n; i++) pcolt[f[i]] = i; plist = 1; next }
+  if (!plist || n < pcolt["Info"]) { if (!plist && $0 != "") err = (err == "") ? clean($0) : err " " clean($0); next }
+  np++
+  pid[np] = clean(f[pcolt["Id"]]); puser[np] = clean(f[pcolt["User"]]); phost[np] = clean(f[pcolt["Host"]])
+  pdb[np] = clean(f[pcolt["db"]]); pcmd[np] = clean(f[pcolt["Command"]]); ptime[np] = clean(f[pcolt["Time"]]) + 0
+  pstate[np] = clean(f[pcolt["State"]]); pinfo[np] = f[pcolt["Info"]]
+  if (pdb[np] == "NULL") pdb[np] = ""
+  if (pstate[np] == "NULL") pstate[np] = ""
+  if (pinfo[np] == "NULL") pinfo[np] = ""
+  gsub(/\\n|\\t/, " ", pinfo[np]); gsub(/\\\\/, "\\", pinfo[np])
+  next
 }
 
 section == "MEMINFO" { sub(/:$/, "", $1); mem[$1] = $2 * 1024; next }
@@ -1729,7 +1754,12 @@ fetch() {
   now_us; sample_time=$REPLY
   printf -v clock '%(%H:%M:%S)T' -1
   sample=$(
-    madmin extended-status variables processlist 2>&1
+    if (( CLI_OK )); then
+      madmin extended-status variables 2>&1
+      printf '%sPLIST\n' "$MARK"; mplist 2>&1
+    else
+      madmin extended-status variables processlist 2>&1
+    fi
     printf '%sMEMINFO\n' "$MARK"
     [[ -r /proc/meminfo ]] && printf '%s\n' "$(</proc/meminfo)"
     printf '%sCPU\n' "$MARK"

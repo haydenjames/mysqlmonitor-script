@@ -67,7 +67,7 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 ## Requirements
 `bash` 4.2+, `mysqladmin` (or `mariadb-admin`) and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.
 
-The top queries view needs the `mysql` (or `mariadb`) client and SELECT on `performance_schema`. To see other users' queries, the MySQL user needs the `PROCESS` privilege (root has it); without it only that user's own queries are listed. Killing another user's query needs `SUPER` (or `CONNECTION_ADMIN`).
+When the `mysql` (or `mariadb`) client is installed, the process list is read through it (`SHOW FULL PROCESSLIST`), which gives the full text of each query; without it, `mysqladmin processlist` is used and queries are cut at 100 characters. The top queries view needs the client and SELECT on `performance_schema`. To see other users' queries, the MySQL user needs the `PROCESS` privilege (root has it); without it only that user's own queries are listed. Killing another user's query needs `SUPER` (or `CONNECTION_ADMIN`).
 
 ## Terminal size
 The screen is redrawn in place, so it no longer scrolls or flickers. If the window is too small to fit everything, the script tells you the size it needs and redraws as soon as you resize.
