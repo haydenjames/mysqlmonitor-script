@@ -54,7 +54,14 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 | `d` | Details: every counter and its description, in as many columns as fit the width. Offered when the fitted dashboard had to leave something out; `d` or `Esc` returns |
 | `↓` `↑` / `j` `k`, `PgDn` `PgUp`, `Home` `End` | Scroll, whenever a view is taller than the window. The header and alerts stay in place |
 
-`./mysqlmonitor.sh --help` lists the options and keys; `-i N` or a bare number sets the refresh interval. Set `NO_COLOR=1` to disable colors. Non-UTF-8 terminals get an ASCII version automatically.
+`./mysqlmonitor.sh --help` lists the options and keys; `-i N` or a bare number sets the refresh interval.
+
+- `--once` prints one snapshot and exits: handy over ssh (`ssh db1 ./mysqlmonitor.sh --once`), in cron, or to paste into a ticket. Output to a pipe or file is plain text.
+- `--host`, `--port`, `--socket`, `--user`, `--defaults-file` and `--login-path` are passed to `mysqladmin`; anything after `--` is passed verbatim. Passwords are never taken on the command line: use `~/.my.cnf`.
+- `--no-color` / `--color` and `--ascii` override the automatic choices (colour only on a terminal, Unicode only in a UTF-8 locale). `NO_COLOR=1` also disables colour. Non-UTF-8 terminals get an ASCII version automatically.
+
+## Testing
+`tests/run.sh` checks every view at 20 terminal sizes with gawk, mawk and busybox awk, simulates key presses with SSH-like timing, and tries `--once`, all against a fake `mysqladmin` in `tests/bin`, so no MySQL server is needed. Run it after any change to the script.
 
 ## Requirements
 `bash`, `mysqladmin` and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.

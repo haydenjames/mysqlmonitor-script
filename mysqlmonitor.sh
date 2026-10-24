@@ -28,9 +28,17 @@ Usage: ${0##*/} [options] [interval]
 
 Live MySQL/MariaDB dashboard for the terminal.
 
-  interval            refresh every N seconds (default $INTERVAL)
-  -i, --interval N    same as the positional interval
-  -h, --help          show this help and exit
+  interval              refresh every N seconds (default $INTERVAL)
+  -i, --interval N      same as the positional interval
+  -1, --once            print one snapshot and exit (for ssh one-liners, cron, logs)
+      --no-color        plain text; also the default when output is not a terminal
+      --color           colour even when output is not a terminal
+      --ascii           no Unicode glyphs; the default outside a UTF-8 locale
+  -h, --help            show this help and exit
+
+Connecting (passed on to mysqladmin):
+      --host H, --port P, --socket S, --user U, --defaults-file F, --login-path L
+      -- ARGS...        any further mysqladmin options, verbatim
 
 Keys while running:
   q     quit                 h     health checks and tuning advice
@@ -40,14 +48,28 @@ Keys while running:
   Esc   back to the dashboard
 
 Credentials come from ~/.my.cnf ([client] user= / password=, chmod 600) or
-from running as root. Set NO_COLOR=1 to disable colours.
+from running as root; a password is never taken on the command line.
+Set NO_COLOR=1 to disable colours.
 EOF
 }
 
+ONCE=0
+FORCE_COLOR=""
+FORCE_ASCII=0
+MYSQL_ARGS=()   # connection options handed to every mysqladmin call
 while [[ $# -gt 0 ]]; do
   case $1 in
     -h|--help) usage; exit 0 ;;
     -i|--interval) shift; [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 )) || { echo "Invalid interval: ${1:-missing}" >&2; exit 1; }; INTERVAL=$1 ;;
+    -1|--once) ONCE=1 ;;
+    --no-color|--no-colour) FORCE_COLOR=0 ;;
+    --color|--colour) FORCE_COLOR=1 ;;
+    --ascii) FORCE_ASCII=1 ;;
+    --host|--port|--socket|--user|--defaults-file|--defaults-extra-file|--login-path)
+      [[ -n $2 ]] || { echo "$1 needs a value" >&2; exit 1; }; MYSQL_ARGS+=("$1=$2"); shift ;;
+    --host=*|--port=*|--socket=*|--user=*|--defaults-file=*|--defaults-extra-file=*|--login-path=*) MYSQL_ARGS+=("$1") ;;
+    --password|--password=*|-p*) echo "Put the password in ~/.my.cnf (chmod 600) instead of on the command line." >&2; exit 1 ;;
+    --) shift; MYSQL_ARGS+=("$@"); break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     *)
       if [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 )); then INTERVAL=$1
@@ -59,10 +81,17 @@ done
 # Use Unicode glyphs only in a UTF-8 locale, and honour NO_COLOR (https://no-color.org).
 locale_name="${LC_ALL:-${LC_CTYPE:-$LANG}}"
 if [[ $locale_name =~ [Uu][Tt][Ff]-?8 ]]; then UNICODE=1; else UNICODE=0; fi
-if [[ -n $NO_COLOR ]]; then COLOR=0; else COLOR=1; fi
+(( FORCE_ASCII )) && UNICODE=0
+if [[ -n $FORCE_COLOR ]]; then COLOR=$FORCE_COLOR
+elif [[ -n $NO_COLOR ]] || [[ ! -t 1 ]]; then COLOR=0
+else COLOR=1; fi
+
+# mysqladmin with the connection options from the command line. --defaults-file must
+# come first for mysqladmin to honour it, which the array order preserves.
+madmin() { command mysqladmin "${MYSQL_ARGS[@]}" "$@"; }
 
 # Test if MySQL command requiring credentials succeeds
-if ! output=$(mysqladmin status 2>&1); then
+if ! output=$(madmin status 2>&1); then
   # Check for .my.cnf
   if [ ! -f ~/.my.cnf ]; then
     echo "It seems MySQL credentials are missing."
@@ -757,7 +786,9 @@ function renderHelp(    W) {
   emit("")
   emit(paint(BOLD CYN, " Command line"))
   emit("   " padR("mysqlmonitor.sh [interval]", 32) "Refresh every N seconds (default 5)")
-  emit("   " padR("--help", 32) "Usage and keys")
+  emit("   " padR("--once", 32) "Print one snapshot and exit (ssh one-liners, cron)")
+  emit("   " padR("--host H  --socket S  --user U", 32) "Connection options, passed on to mysqladmin")
+  emit("   " padR("--help", 32) "All options and keys")
   emit("")
   emit("   Credentials: ~/.my.cnf with [client] user= and password= (chmod 600), or run as root.")
   emit("   Set NO_COLOR=1 to disable colours. Non-UTF-8 terminals get an ASCII version.")
@@ -1393,7 +1424,7 @@ fetch() {
   now_us; sample_time=$REPLY
   printf -v clock '%(%H:%M:%S)T' -1
   sample=$(
-    mysqladmin extended-status variables processlist 2>&1
+    madmin extended-status variables processlist 2>&1
     printf '@@MEMINFO\n'
     [[ -r /proc/meminfo ]] && printf '%s\n' "$(</proc/meminfo)"
     printf '@@CPU\n'
@@ -1512,7 +1543,7 @@ apply_key() {
   fi
   if [[ -n $CONFIRM ]]; then
     if [[ $KEY == y || $KEY == Y ]]; then
-      if out=$(mysqladmin kill "$KILL_ID" 2>&1); then MSG="Killed $KILL_ID."
+      if out=$(madmin kill "$KILL_ID" 2>&1); then MSG="Killed $KILL_ID."
       else MSG="Kill $KILL_ID failed: ${out//$'\n'/ }"; fi
       deadline=0
     fi
@@ -1575,6 +1606,20 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'resized=1' WINCH
+
+if (( ONCE )); then
+  # One snapshot: two samples a second apart so the rates are real, printed in place.
+  read_size
+  [[ -t 1 ]] || { rows=${LINES:-50}; cols=${COLUMNS:-120}; }
+  state=""; VIEW=dashboard; DETAILS=0; SCROLL=0; PAUSED=0
+  PSORT=time PSLEEP=0 PFILTER="" PSEL=1 EDIT=0 EDITBUF="" CONFIRM="" MSG=""
+  fetch; prev_state=$state; render; state=$next_state
+  sleep 1
+  fetch; prev_state=$state; render
+  printf '%s\n' "$frame"
+  trap - EXIT   # nothing to restore: the screen was never taken over
+  exit 0
+fi
 
 # Keys pressed while a refresh is running must not be echoed onto the screen
 saved_stty=$(stty -g 2>/dev/null)
