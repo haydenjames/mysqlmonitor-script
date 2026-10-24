@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2026.10.23.02 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2026.10.24.01"
 
 # Define minimum terminal width. The required height is measured from the frame itself.
 MIN_COLS=50
@@ -210,12 +210,13 @@ function fmtDur(sec) { return (sec < 60) ? sec "s" : (sec < 3600) ? int(sec / 60
 
 # Live queries below the panels, sized to the rows left over (qrows lines of queries).
 function emitQueries(w, qrows,    wide, hdr, i, k, lvl, t, line, used) {
+  # Idle: a single line says so instead of an empty table
+  if (NQ == 0) { emit(ptitle(sprintf("ACTIVE QUERIES  none running, %d sleeping", nsleep), w)); return }
   emit(ptitle(sprintf("ACTIVE QUERIES  %d running, %d sleeping", NQ, nsleep), w))
   wide = (w >= 96)
   hdr = "   " padR("ID", 9) padR("USER", 11) (wide ? padR("HOST", 16) : "") padR("DB", 13) padL("TIME", 7) "  " \
         (wide ? padR("STATE", 18) : "") "QUERY"
   emit(paint(BOLD, clip(hdr, w)))
-  if (NQ == 0) { emit(" " mark(1) " " paint(GRN, "No active queries")); return }
   for (k = 1; k <= NQ && k <= qrows; k++) {
     if (k == qrows && NQ > qrows) { emit("   +" (NQ - k + 1) " more"); return }
     i = QO[k]; t = ptime[i]
@@ -565,26 +566,33 @@ function emitAlerts(budget, w,    lvl, i, shown) {
     }
 }
 
-# Assigns panels to n columns, keeping their order within each column, so that the
-# tallest column is as short as possible. Tries every assignment (at most 3^6 = 729).
-function arrange(n, sep,    total, k, x, i, c, h, used, ok, mx, best) {
-  total = 1; for (i = 1; i <= NP; i++) total *= n
+# Height of panels i..j stacked in one column (sep = blank line between panels).
+function stackH(i, j, sep,    k, h) {
+  h = 0
+  for (k = i; k <= j; k++) h += PN[ORDER[k]] + ((k > i) ? sep : 0)
+  return h
+}
+
+# Assigns panels to n columns in reading order (down one column, then the next),
+# choosing the split points that keep the tallest column as short as possible.
+function arrange(n, sep,    i, a, b, mx, best, ba, bb) {
   best = -1
-  for (k = 0; k < total; k++) {
-    x = k; used = 0; ok = 1
-    for (c = 1; c <= n; c++) h[c] = 0
-    for (i = 1; i <= NP; i++) {
-      c = x % n + 1; x = int(x / n)
-      # Canonical form: column c is only used after column c-1 (skips mirror images)
-      if (c > used + 1) { ok = 0; break }
-      if (c > used) used = c
-      h[c] += PN[ORDER[i]] + ((h[c] > 0) ? sep : 0)
-      TRY[i] = c
+  if (n == 1) { ba = NP; bb = NP }
+  else if (n == 2) {
+    for (a = 1; a < NP; a++) {
+      mx = stackH(1, a, sep); if (stackH(a + 1, NP, sep) > mx) mx = stackH(a + 1, NP, sep)
+      if (best < 0 || mx < best) { best = mx; ba = a; bb = NP }
     }
-    if (!ok || (used < n && NP >= n)) continue
-    mx = 0; for (c = 1; c <= n; c++) if (h[c] > mx) mx = h[c]
-    if (best < 0 || mx < best) { best = mx; for (i = 1; i <= NP; i++) COLOF[i] = TRY[i] }
+  } else {
+    for (a = 1; a < NP - 1; a++)
+      for (b = a + 1; b < NP; b++) {
+        mx = stackH(1, a, sep)
+        if (stackH(a + 1, b, sep) > mx) mx = stackH(a + 1, b, sep)
+        if (stackH(b + 1, NP, sep) > mx) mx = stackH(b + 1, NP, sep)
+        if (best < 0 || mx < best) { best = mx; ba = a; bb = b }
+      }
   }
+  for (i = 1; i <= NP; i++) COLOF[i] = (i <= ba) ? 1 : (i <= bb) ? 2 : 3
 }
 
 # Emits the panels packed into n columns of width colw.
@@ -639,6 +647,16 @@ function layoutCompact(budget, qrows,    colw, sep) {
          L(high(mem_used_pct, 90, 95), "Memory", pct(mem_used_pct), bar(mem_used_pct, GW, 90, 95), ""))
     emit(padR(L((r_tmp >= 1) ? high(tmp_now, 25, 50) : 0, "Tmp disk", pct((tmp_now != "") ? tmp_now : tmp_boot), "", ""), colw) sep \
          L(high(cpu_pct, 80, 95), "CPU", pct(cpu_pct), bar(cpu_pct, GW, 80, 95), ""))
+    # Extra pairs when the terminal has spare rows (CX = 0..3, set by fit)
+    if (CX >= 1)
+      emit(padR(L(0, "Scans/s", formatRate(r_scan), spark("scan", GW, 1), ""), colw) sep \
+           L(high(peak_pct, 85, 95), "Peak", cur["Max_used_connections"] ((maxc > 0) ? "/" maxc : ""), bar(peak_pct, GW, 85, 95), ""))
+    if (CX >= 2)
+      emit(padR(L(0, "Disk rd/s", formatRate(r_bpr), spark("bpr", GW, 1), ""), colw) sep \
+           ((swap_total > 0) ? L(high(swap_pct, 20, 50), "Swap", pct(swap_pct), bar(swap_pct, GW, 20, 50), "") : L(0, "Swap", "none", "", "")))
+    if (CX >= 3)
+      emit(padR(L((toc > 0 && cur["Open_tables"] >= toc && r_opened >= 1) ? 2 : 0, "Open tbl", pct(ot_pct), bar(ot_pct, GW, 95, 101), ""), colw) sep \
+           L(0, "Load", "", "", load))
   } else {
     emit(L(3, "MySQL", "DOWN", "", clip(err, 2 * colw - 20)))
   }
@@ -711,9 +729,11 @@ function build(layout, colw, budget, qrows) {
 # first to extra alerts (up to 8 in all), then to the active queries panel.
 # layout: 0 = compact, otherwise the number of columns.
 function fit(layout, colw,    budget, spare, gap, qrows) {
+  CX = 0
   build(layout, colw, 1, 0)
   if (NO > rows) return 0
   spare = rows - NO
+  if (layout == 0 && up && cols >= 76) { CX = (spare > 3) ? 3 : spare; spare -= CX }
   budget = (NAL > 8) ? 8 : (NAL > 1) ? NAL : 1
   if (budget - 1 > spare) budget = spare + 1
   spare -= budget - 1
@@ -723,7 +743,7 @@ function fit(layout, colw,    budget, spare, gap, qrows) {
     qrows = spare - 2 - gap
     if (qrows > ((NQ > 0) ? NQ : 1)) qrows = (NQ > 0) ? NQ : 1
   }
-  if (budget > 1 || qrows > 0) build(layout, colw, budget, qrows)
+  if (budget > 1 || qrows > 0 || CX > 0) build(layout, colw, budget, qrows)
   QROWS = qrows
   return 1
 }
