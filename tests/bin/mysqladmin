@@ -2,10 +2,10 @@
 # Fake mysqladmin: counters grow with time plus a random walk, so rates and sparklines move.
 # State lives outside the repo so repeated runs can share it; MOCK_STATE overrides.
 STATE=${MOCK_STATE:-/tmp/mysqlmonitor-mock}; mkdir -p "$STATE"
-[[ -e $STATE/fail && $1 != status ]] && { echo "mysqladmin: connect to server at 'localhost' failed" >&2; echo "error: 'Access denied'" >&2; exit 1; }
-[[ $1 == status ]] && { echo "Uptime: 1000  Threads: 3"; exit 0; }
+[[ -e $STATE/fail && " $* " != *" status "* ]] && { echo "mysqladmin: connect to server at 'localhost' failed" >&2; echo "error: 'Access denied'" >&2; exit 1; }
+[[ " $* " == *" status "* ]] && { echo "Uptime: 1000  Threads: 3"; exit 0; }
 ACC=$STATE/acc
-read -r q r s o m < "$ACC" 2>/dev/null || { q=0; r=0; s=0; o=0; m=0; }
+read -r q r s o m 2>/dev/null < "$ACC" || { q=0; r=0; s=0; o=0; m=0; }
 q=$((q + RANDOM % 3000)); r=$((r + RANDOM % 60)); s=$((s + RANDOM % 30)); o=$((o + RANDOM % 6)); m=$((m + RANDOM % 12))
 echo "$q $r $s $o $m" > "$ACC"
 t=$(( $(date +%s) - 1761000000 ))

@@ -11,13 +11,20 @@ TITLE="MySQL Monitor v2026.10.24.01"
 # Define minimum terminal width. The required height is measured from the frame itself.
 MIN_COLS=50
 
-# Check for required tools
-for tool in mysqladmin awk stty; do
+# Check for required tools. MariaDB 11 prefers its own client names and warns on the
+# old ones, so those are tried first.
+for tool in awk stty; do
   if ! command -v "$tool" &> /dev/null; then
     echo "Error: $tool is not installed. Please install it and try again."
     exit 1
   fi
 done
+ADMIN_CLI=""
+for c in mariadb-admin mysqladmin; do command -v "$c" &>/dev/null && { ADMIN_CLI=$c; break; }; done
+if [[ -z $ADMIN_CLI ]]; then
+  echo "Error: mysqladmin (or mariadb-admin) is not installed. Please install the MySQL/MariaDB client tools."
+  exit 1
+fi
 
 # Default refresh interval in seconds
 INTERVAL=5
@@ -41,10 +48,13 @@ Connecting (passed on to mysqladmin):
       -- ARGS...        any further mysqladmin options, verbatim
 
 Keys while running:
-  q     quit                 h     health checks and tuning advice
-  ?     help                 r     raw counters (the classic table)
+  q     quit                      ?     help
+  h     health checks and advice  r     raw counters (the classic table)
+  p     processes (o sort, s sleepers, f filter, up/down select, k kill, c clear history)
+  t     top queries from performance_schema (o sort, up/down select)
   d     details: every counter and description (when the dashboard had to leave some out)
-  ↑ ↓ PgUp PgDn Home End     scroll a view that is taller than the window
+  space pause/resume              + -   refresh faster or slower
+  ↑ ↓ PgUp PgDn Home End          scroll a view that is taller than the window
   Esc   back to the dashboard
 
 Credentials come from ~/.my.cnf ([client] user= / password=, chmod 600) or
@@ -60,7 +70,7 @@ MYSQL_ARGS=()   # connection options handed to every mysqladmin call
 while [[ $# -gt 0 ]]; do
   case $1 in
     -h|--help) usage; exit 0 ;;
-    -i|--interval) shift; [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 )) || { echo "Invalid interval: ${1:-missing}" >&2; exit 1; }; INTERVAL=$1 ;;
+    -i|--interval) shift; [[ $1 =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 )) || { echo "Invalid interval: ${1:-missing}" >&2; exit 1; }; INTERVAL=$(( 10#$1 )) ;;
     -1|--once) ONCE=1 ;;
     --no-color|--no-colour) FORCE_COLOR=0 ;;
     --color|--colour) FORCE_COLOR=1 ;;
@@ -72,7 +82,7 @@ while [[ $# -gt 0 ]]; do
     --) shift; MYSQL_ARGS+=("$@"); break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     *)
-      if [[ $1 =~ ^[0-9]+$ ]] && (( $1 >= 1 )); then INTERVAL=$1
+      if [[ $1 =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 )); then INTERVAL=$(( 10#$1 ))
       else echo "Invalid interval specified. Using default INTERVAL=$INTERVAL seconds."; fi ;;
   esac
   shift
@@ -87,8 +97,9 @@ elif [[ -n $NO_COLOR ]] || [[ ! -t 1 ]]; then COLOR=0
 else COLOR=1; fi
 
 # mysqladmin with the connection options from the command line. --defaults-file must
-# come first for mysqladmin to honour it, which the array order preserves.
-madmin() { command mysqladmin "${MYSQL_ARGS[@]}" "$@"; }
+# come first for mysqladmin to honour it, which the array order preserves. A connect
+# timeout keeps a hung server from freezing the keys.
+madmin() { command "$ADMIN_CLI" "${MYSQL_ARGS[@]}" --connect-timeout=5 "$@"; }
 
 # Exact per-statement totals from performance_schema, read with the mysql client once per
 # refresh and differenced against the previous sample for the top-queries view (t).
@@ -96,10 +107,10 @@ TOP_SQL="SELECT DIGEST, IFNULL(SCHEMA_NAME,''), COUNT_STAR, SUM_TIMER_WAIT, MAX_
 SUM_CREATED_TMP_DISK_TABLES, SUM_SORT_MERGE_PASSES, SUM_NO_INDEX_USED, SUM_LOCK_TIME, DIGEST_TEXT \
 FROM performance_schema.events_statements_summary_by_digest \
 WHERE DIGEST_TEXT NOT LIKE 'SHOW %' AND DIGEST_TEXT NOT LIKE '%performance_schema%' \
-ORDER BY SUM_TIMER_WAIT DESC LIMIT 100"
+ORDER BY SUM_TIMER_WAIT DESC LIMIT 250"
 MYSQL_CLI=""
-for c in mysql mariadb; do command -v "$c" &>/dev/null && { MYSQL_CLI=$c; break; }; done
-mtop() { command "$MYSQL_CLI" "${MYSQL_ARGS[@]}" -B -N -e "$TOP_SQL"; }
+for c in mariadb mysql; do command -v "$c" &>/dev/null && { MYSQL_CLI=$c; break; }; done
+mtop() { command "$MYSQL_CLI" "${MYSQL_ARGS[@]}" --connect-timeout=5 -B -N -e "${1:-$TOP_SQL}"; }
 
 # Test if MySQL command requiring credentials succeeds
 if ! output=$(madmin status 2>&1); then
@@ -121,10 +132,14 @@ if ! output=$(madmin status 2>&1); then
       echo "Error: ~/.my.cnf permissions are $file_perm. Please set them to 600 using 'chmod 600 ~/.my.cnf'."
       exit 1
     fi
-    echo "Credentials found in ~/.my.cnf, but the command still failed."
+    if [[ $output == *"Can't connect"* || $output == *"Connection refused"* ]]; then
+      echo "Cannot reach the MySQL server. Is it running? (systemctl status mysql / mariadb)"
+    else
+      echo "Credentials found in ~/.my.cnf, but the command still failed."
+      echo "Please verify your credentials or server status."
+    fi
     echo "MySQL admin output:"
     echo "$output"
-    echo "Please verify your credentials or server status."
     exit 1
   fi
 fi
@@ -133,7 +148,7 @@ fi
 TOPQ=0; TOP_ERR=""
 if [[ -z $MYSQL_CLI ]]; then
   TOP_ERR="The mysql client is not installed; it is needed to read performance_schema."
-elif top_out=$(mtop 2>&1); then
+elif top_out=$(mtop "${TOP_SQL/LIMIT 250/LIMIT 1}" 2>&1); then
   TOPQ=1
 else
   TOP_ERR="performance_schema is not readable: ${top_out//$'\n'/ }"
@@ -201,7 +216,8 @@ function formatRate(r) {
 
 function formatBytes(b) {
   if (b >= 1073741824) return sprintf("%.1f GB", b / 1073741824)
-  return sprintf("%.0f MB", b / 1048576)
+  if (b >= 1048576)    return sprintf("%.0f MB", b / 1048576)
+  return sprintf("%.0f KB", b / 1024)
 }
 
 function pct(x)  { return (x == "") ? "-" : sprintf("%.1f%%", x) }
@@ -209,7 +225,7 @@ function pct2(x) { return (x == "") ? "-" : sprintf("%.2f%%", x) }
 
 # Per-second change of a counter since the previous frame ("" when unknown).
 function rate(name,    d) {
-  if (!have_prev || !(name in cur) || !(name in prev)) return ""
+  if (!have_prev || !(name in have) || !(name in prev)) return ""
   d = cur[name] - prev[name]
   return (d < 0) ? "" : d / elapsed
 }
@@ -265,6 +281,7 @@ function clipStyled(s, w,    i, n, c, out, len) {
 # characters so it can't move the cursor or change colours, and collapse whitespace.
 function clean(s) {
   gsub(/[\001-\037\177]/, " ", s)
+  gsub(/\302[\200-\237]/, " ", s)      # UTF-8 encoded C1 controls (CSI and friends)
   gsub(/  +/, " ", s)
   return trim(s)
 }
@@ -410,7 +427,7 @@ function setWidths(colw, compact) {
   if (GW < 5) GW = 0
 }
 
-function ptitle(t, w) { return paint(BOLD CYN, G_H " " t " ") paint(DIM, rep(G_H, w - length(t) - 3)) }
+function ptitle(t, w) { return paint(BOLD CYN, G_H " " t " ") paint(DIM, rep(G_H, w - vw(t) - 3)) }
 
 function panel(p, title) { cp = p; PN[p] = 1; P[p, 1] = ptitle(title, PW) }
 function pl(s) { PN[cp]++; P[cp, PN[cp]] = s }
@@ -460,7 +477,7 @@ function renderRaw(    i, name, label, extra, color, width, line) {
 
     for (i = 1; i <= nm; i++) {
       name = metrics[i]
-      if (!(name in cur)) continue
+      if (!(name in have)) continue
 
       if (name == "Uptime") {
         addSpanRow("Uptime (Wait 24h for accuracy)", prettyTime(cur[name]))
@@ -481,7 +498,7 @@ function renderRaw(    i, name, label, extra, color, width, line) {
     if (bp_size > 0)
       addRow("InnoDB Buffer Pool Size", formatBytes(bp_size), "", "Set by innodb_buffer_pool_size.", "")
 
-    if ("Innodb_buffer_pool_pages_free" in cur)
+    if ("Innodb_buffer_pool_pages_free" in have)
       addRow("InnoDB Buffer Pool Free",
              formatBytes(bp_free) ((bp_free_pct != "") ? sprintf(" (%.0f%%)", bp_free_pct) : ""), "",
              "Zero/low? = innodb_buffer_pool_size.", (cur["Innodb_buffer_pool_pages_free"] == 0) ? RED : "")
@@ -620,7 +637,7 @@ function renderHealth(    W, lvl, x, n, eff) {
        sprintf("innodb_buffer_pool_size = %s. %s RAM available; try %s.", formatBytes(bp_size), formatBytes(mem_avail), formatBytes(bp_size + mem_avail / 2)))
   hrow(high(r_wait, 0.001, 1), "Waits for free pool pages/s", formatRate(r_wait), bootRate("Innodb_buffer_pool_wait_free"), "0",
        sprintf("The pool is too small for the working set: raise innodb_buffer_pool_size (now %s).", formatBytes(bp_size)))
-  hrow((cur["Innodb_buffer_pool_pages_free"] == 0) ? 2 : 1, "Buffer pool free", pct(bp_free_pct), "-", "> 0%",
+  hrow(!bp_known ? 0 : (cur["Innodb_buffer_pool_pages_free"] == 0) ? 2 : 1, "Buffer pool free", pct(bp_free_pct), "-", "> 0%",
        "The pool is fully used. Fine while the hit ratio stays high; otherwise raise innodb_buffer_pool_size.")
   hrow(high(r_logw, 0.001, 1), "InnoDB log waits/s", formatRate(r_logw), bootRate("Innodb_log_waits"), "0",
        sprintf("innodb_log_buffer_size = %s. Try %s.", formatBytes(vars["innodb_log_buffer_size"]), formatBytes(vars["innodb_log_buffer_size"] * 2)))
@@ -643,7 +660,7 @@ function renderHealth(    W, lvl, x, n, eff) {
        formatRate(r_refused), bootRate("Connection_errors_max_connections"), "0",
        sprintf("max_connections = %d was reached and clients were turned away (%s since boot). Raise it, or fix connection leaks and pooling.",
                maxc, formatNumber(cur["Connection_errors_max_connections"])))
-  hrow((ncpu > 0) ? high(cur["Threads_running"], 2 * ncpu, 4 * ncpu) : 0, "Running threads", cur["Threads_running"] "", "-",
+  hrow((ncpu > 0) ? high(thr_running, 2 * ncpu, 4 * ncpu) : 0, "Running threads", thr_running "", "-",
        (ncpu > 0) ? "< " 2 * ncpu : "-", "More runnable threads than cores: queries are queuing for CPU. Look at the process list (p) and the slow log.")
   hrow(high(r_abort, 1, 10), "Aborted connections/s", formatRate(r_abort), bootRate("Aborted_connects"), "~0",
        "Failed logins, timeouts or dropped clients: check wait_timeout, max_allowed_packet and the network.")
@@ -922,9 +939,9 @@ function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, f
   W = cols - 3
   NO = 0
   emit(header(W))
-  if (!topq) {
+  if (!topq || (NT == 0 && toupper(svars["performance_schema"]) == "OFF")) {
     emit(ptitle("TOP QUERIES", W))
-    emit(" " mark(2) " " clip("Not available: " top_err, W - 3))
+    emit(" " mark(2) " " clip("Not available: " ((topq) ? "performance_schema is OFF on this server, so no statements are recorded." : top_err), W - 3))
     emit("")
     emit("   This view reads performance_schema.events_statements_summary_by_digest with the mysql client.")
     emit("   MySQL 5.7/8.0 have performance_schema on by default; MariaDB needs performance_schema = ON in")
@@ -985,7 +1002,7 @@ function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, f
 
 # ---------- Help view ----------
 
-function helpKey(k, text) { emit("   " padR(paint(INV, " " k " "), 12 + (color ? 11 : 0)) text) }
+function helpKey(k, text) { emit("   " padR(paint(INV, " " k " "), 12) text) }
 
 function renderHelp(    W) {
   W = cols - 3
@@ -996,7 +1013,7 @@ function renderHelp(    W) {
   helpKey("h", "Health checks with tuning advice")
   helpKey("r", "Raw counters: the classic table")
   helpKey("d", "Details: every counter and description (when the dashboard had to leave some out)")
-  helpKey(G_UP G_DOWN, "Scroll a view that is taller than the window (also j k, PgUp PgDn, Home End)")
+  helpKey(G_UP G_DOWN, "Scroll a view that is taller than the window (also PgUp PgDn, Home End; j k outside the process view)")
   helpKey("p", "Processes: sort (o), show sleepers (s), filter (f), select (" G_UP G_DOWN ") and kill (k)")
   emit("                Below the live list, recent queries caught in earlier samples stay listed,")
   emit("                grouped by shape with how often and how long they ran (c clears them).")
@@ -1035,7 +1052,7 @@ function buildPanels(    p) {
     if (err != "") pl("   " paint(RED, clip(err, PW - 3)))
   } else {
     ORDER[++NP] = "thr"; panel("thr", "THROUGHPUT")
-    pl(L(0, "Queries/s", formatRate(r_q), spark("qps", GW, 1), "avg " formatRate(avg_qps), "Client requests per second."))
+    pl(L(0, "Queries/s", formatRate(r_q), spark("qps", GW, 1), "avg " formatRate(avg_qps), "Client requests per second (not this monitor's)."))
     pl(L(high(r_slow, 1, 10), "Slow/s", formatRate(r_slow), spark("slow", GW, 1),
          (slow_pct != "") ? pct2(slow_pct) " slow" : "total " formatNumber(cur["Slow_queries"]),
          "Queries exceeding long_query_time."))
@@ -1045,16 +1062,16 @@ function buildPanels(    p) {
     pd(L(0, "Uptime", "", "", prettyTime(cur["Uptime"]), "Wait 24h for accuracy."))
 
     ORDER[++NP] = "con"; panel("con", "CONNECTIONS")
-    pl(L(high(conn_pct, 85, 95), "Connected", cur["Threads_connected"] ((maxc > 0) ? "/" maxc : ""),
-         bar(conn_pct, GW, 85, 95), pct(conn_pct), "Currently open connections."))
-    pl(L(0, "Running", cur["Threads_running"], spark("running", GW, ncpu), (ncpu > 0) ? ncpu " cores" : "",
-         "Threads currently running queries."))
+    pl(L(high(conn_pct, 85, 95), "Connected", thr_conn ((maxc > 0) ? "/" maxc : ""),
+         bar(conn_pct, GW, 85, 95), pct(conn_pct), "Open connections, excluding this monitor."))
+    pl(L(0, "Running", thr_running, spark("running", GW, ncpu), (ncpu > 0) ? ncpu " cores" : "",
+         "Threads running queries, excluding this monitor."))
     pl(L(high(peak_pct, 85, 95), "Peak", cur["Max_used_connections"] ((maxc > 0) ? "/" maxc : ""),
          bar(peak_pct, GW, 85, 95), pct(peak_pct), "Max concurrent connections so far."))
     pl(L(high(r_abort, 1, 10), "Aborted/s", formatRate(r_abort), "", "clients + connects", "Failed connections per second."))
     pl(L((r_conn >= 1) ? low(tc_now, 90, 50) : 0, "Thread cache", pct((tc_now != "") ? tc_now : tc_boot), "",
          (tc_now != "") ? "boot " pct(tc_boot) : "since boot", "Faster connection handling. > 90%."))
-    pd(R(0, "Connections/s", "Connections", "", "Total connection attempts."))
+    pd(L(0, "Connections/s", formatRate(r_conn), "", "total " formatNumber(cur["Connections"]), "New connections per second (not this monitor's)."))
     pd(R(0, "Created/s", "Threads_created", "", "Threads created for connections."))
     pd(L(0, "Cached", cur["Threads_cached"], "", "", "Threads in the thread cache."))
     pd(L(0, "Aborted cli", formatNumber(cur["Aborted_clients"]), "", "since boot", "Failed client connections."))
@@ -1063,7 +1080,7 @@ function buildPanels(    p) {
     ORDER[++NP] = "bp"; panel("bp", "INNODB BUFFER POOL")
     pl(L(0, "Size", (bp_size > 0) ? formatBytes(bp_size) : "-", bar(bp_used_pct, GW, 101, 101), pct(bp_used_pct) " used",
          "Set by innodb_buffer_pool_size."))
-    pl(L((cur["Innodb_buffer_pool_pages_free"] == 0) ? 2 : 0, "Free", formatBytes(bp_free), "",
+    pl(L((bp_known && cur["Innodb_buffer_pool_pages_free"] == 0) ? 2 : 0, "Free", formatBytes(bp_free), "",
          (bp_free_pct != "") ? pct(bp_free_pct) " of pool" : "", "Zero/low? = innodb_buffer_pool_size."))
     pl(L(low(hit_now, 99, 95), "Hit ratio", pct2((hit_now != "") ? hit_now : hit_boot), "",
          (hit_now != "") ? "boot " pct2(hit_boot) : "since boot", "High QPS? Aim for high hit ratio."))
@@ -1210,9 +1227,9 @@ function layoutCompact(budget, qrows,    colw, sep) {
   emit(header(2 * colw + 3))
   if (up) {
     emit(colpad(L(0, "QPS", formatRate(r_q), spark("qps", GW, 1), ""), colw) sep \
-         L(high(conn_pct, 85, 95), "Conn", cur["Threads_connected"] ((maxc > 0) ? "/" maxc : ""), bar(conn_pct, GW, 85, 95), (GW > 0) ? pct(conn_pct) : ""))
+         L(high(conn_pct, 85, 95), "Conn", thr_conn ((maxc > 0) ? "/" maxc : ""), bar(conn_pct, GW, 85, 95), (GW > 0) ? pct(conn_pct) : ""))
     emit(colpad(L(high(r_slow, 1, 10), "Slow/s", formatRate(r_slow), spark("slow", GW, 1), ""), colw) sep \
-         L(0, "Running", cur["Threads_running"], spark("running", GW, ncpu), ""))
+         L(0, "Running", thr_running, spark("running", GW, ncpu), ""))
     emit(colpad(L(low(hit_now, 99, 95), "BP hit", pct2((hit_now != "") ? hit_now : hit_boot), "", ""), colw) sep \
          L(high(mem_used_pct, 90, 95), "Memory", pct(mem_used_pct), bar(mem_used_pct, GW, 90, 95), ""))
     emit(colpad(L((r_tmp >= 1) ? high(tmp_now, 25, 50) : 0, "Tmp disk", pct((tmp_now != "") ? tmp_now : tmp_boot), "", ""), colw) sep \
@@ -1340,7 +1357,9 @@ function layoutBest(    c, cand, cf, minw, maxw, n, colw) {
 BEGIN {
   HIST_MAX = 60
   MAXQ = 40        # remembered query patterns
-  pfilter = ENVIRON["MM_FILTER"]; confirm = ENVIRON["MM_CONFIRM"]; msg = ENVIRON["MM_MSG"]; top_err = ENVIRON["MM_TOPERR"]
+  pfilter = clean(ENVIRON["MM_FILTER"]); confirm = clean(ENVIRON["MM_CONFIRM"]); msg = clean(ENVIRON["MM_MSG"]); top_err = clean(ENVIRON["MM_TOPERR"])
+  if (marker == "") marker = "@@"  # section marker; the script passes a nonce so server text can't forge one
+  ml = length(marker)
   DESC_MIN = 84    # narrowest column that fits descriptions (without the graphic)
 
   # Dim is kept for decoration only (bar tracks, separators, rules): many terminal themes
@@ -1381,7 +1400,7 @@ BEGIN {
   split("innodb_buffer_pool_size innodb_page_size max_connections table_open_cache hostname version " \
         "thread_cache_size tmp_table_size max_heap_table_size slow_query_log long_query_time " \
         "innodb_log_buffer_size open_files_limit sort_buffer_size key_buffer_size " \
-        "innodb_log_file_size innodb_log_files_in_group innodb_redo_log_capacity query_cache_type query_cache_size", v, " ")
+        "innodb_log_file_size innodb_log_files_in_group innodb_redo_log_capacity query_cache_type query_cache_size performance_schema", v, " ")
   for (i in v) wanted_var[v[i]] = 1
 
   desc["Aborted_clients"]                  = "Failed client connections."
@@ -1430,7 +1449,7 @@ BEGIN {
   section = ""; tables = 0; err = ""
 }
 
-/^@@[A-Z]+/ { section = substr($1, 3); if (section == "TIME") now = $2; next }
+substr($0, 1, ml) == marker { section = substr($1, ml + 1); if (section == "TIME") now = $2; next }
 
 section == "PREV" {
   if ($1 == "D") {
@@ -1463,17 +1482,25 @@ section == "CUR" {
       for (i = 2; i < n; i++) pcol[trim(f[i])] = i - 1
       next
     }
-    if (tables == 1 && (name in wanted)) cur[name] = val + 0
-    else if (tables == 2 && (name in wanted_var)) { vars[name] = val + 0; svars[name] = val }
-    else if (tables == 3) addProcess(f, n)
+    if (tables == 1 && (name in wanted)) { cur[name] = val + 0; have[name] = 1 }
+    else if (tables == 2 && (name in wanted_var)) { vars[name] = val + 0; svars[name] = clean(val) }
+    else if (tables == 3 && n - 2 >= pcols && name ~ /^[0-9]+$/) addProcess(f, n)
+    else if (tables == 3) contLine($0)
   } else if (tables == 3 && $0 !~ /^\+/) {
-    # Continuation of a multi-line query: keep the text, drop the trailing columns
-    line = $0; sub(/ *\|.*$/, "", line)
-    if (np > 0) pinfo[np] = pinfo[np] " " line
+    contLine($0)
   } else if ($0 !~ /^\+/ && $0 != "") {
-    err = (err == "") ? $0 : err " " $0
+    err = (err == "") ? clean($0) : err " " clean($0)
   }
   next
+}
+
+# A later line of a multi-line query: keep its text, drop the table columns after Info
+# (one "|" group per trailing column, plus the closing "|").
+function contLine(l,    k, tail) {
+  if (np == 0) return
+  tail = pcols - pcol["Info"]
+  for (k = 0; k <= tail; k++) sub(/ *\|[^|]*$/, "", l)
+  pinfo[np] = pinfo[np] " " l
 }
 
 section == "MEMINFO" { sub(/:$/, "", $1); mem[$1] = $2 * 1024; next }
@@ -1489,24 +1516,26 @@ section == "CPU" {
 section == "LOAD" { load = $1 " " $2 " " $3; load1 = $1; next }
 
 section == "TOP" {
-  if (index($0, "\t") == 0) { if ($0 != "") top_err = (top_err == "") ? $0 : top_err " " $0; next }
+  if (index($0, "\t") == 0) { if ($0 != "") top_err = (top_err == "") ? clean($0) : top_err " " clean($0); next }
   n = split($0, f, "\t"); if (n < 12) next
   k = ++NT
-  td[k] = f[1]; tschema[k] = f[2]; tcount[k] = f[3] + 0; tsum[k] = f[4] + 0; tmax[k] = f[5] + 0
+  td[k] = clean(f[1]); tschema[k] = clean(f[2]); tcount[k] = f[3] + 0; tsum[k] = f[4] + 0; tmax[k] = f[5] + 0
   trex[k] = f[6] + 0; trsent[k] = f[7] + 0; ttmp[k] = f[8] + 0; tsortm[k] = f[9] + 0; tnoidx[k] = f[10] + 0; tlock[k] = f[11] + 0
   ttext[k] = f[12]; for (i = 13; i <= n; i++) ttext[k] = ttext[k] " " f[i]
+  ttext[k] = clean(ttext[k])
   next
 }
 
 END {
-  up = ("Uptime" in cur)
+  up = ("Uptime" in have)
+  bp_known = ("Innodb_buffer_pool_pages_free" in have)
   have_prev = ("T" in prev) && ("Uptime" in prev) && up && cur["Uptime"] >= prev["Uptime"]
   elapsed = have_prev ? (now - prev["T"]) / 1000000 : 0
   if (elapsed <= 0) have_prev = 0
 
   # ---------- Derived metrics ----------
-  host = svars["hostname"]
-  server = svars["version"]
+  host = clean(svars["hostname"])
+  server = clean(svars["version"])
   if (server != "") {
     sub(/-.*/, "", server)
     server = ((svars["version"] ~ /MariaDB/) ? "MariaDB " : "MySQL ") server
@@ -1514,6 +1543,13 @@ END {
 
   avg_qps = (cur["Uptime"] > 0) ? cur["Questions"] / cur["Uptime"] : ""
   r_q = rate("Questions"); r_slow = rate("Slow_queries"); r_scan = rate("Select_scan")
+  # This monitor's own work is in the counters too: 3 statements and 1 connection per
+  # sample (one more of each with the top-queries query), and its own thread in the
+  # gauges. Take them out so an idle server reads as idle.
+  own_q = 3 + (topq ? 1 : 0); own_c = 1 + (topq ? 1 : 0)
+  if (r_q != "" && elapsed > 0) { r_q -= own_q / elapsed; if (r_q < 0) r_q = 0 }
+  thr_running = cur["Threads_running"] - 1; if (thr_running < 0) thr_running = 0
+  thr_conn = cur["Threads_connected"] - 1; if (thr_conn < 0) thr_conn = 0
   # Share of queries that were slow: a rate alone means little without the load behind it
   slow_boot = (cur["Questions"] > 0) ? 100 * cur["Slow_queries"] / cur["Questions"] : ""
   slow_now = (have_prev && delta("Questions") > 0) ? 100 * delta("Slow_queries") / delta("Questions") : ""
@@ -1529,6 +1565,7 @@ END {
   redo_h_now = (redo_total > 0 && r_redo > 0) ? redo_total / (r_redo * 3600) : ""
   redo_h_boot = (redo_total > 0 && cur["Uptime"] > 0 && cur["Innodb_os_log_written"] > 0) ? redo_total / (cur["Innodb_os_log_written"] / cur["Uptime"] * 3600) : ""
   r_fj = rate("Select_full_join"); r_conn = rate("Connections")
+  if (r_conn != "" && elapsed > 0) { r_conn -= own_c / elapsed; if (r_conn < 0) r_conn = 0 }
   r_abort = (rate("Aborted_clients") != "" && rate("Aborted_connects") != "") ? rate("Aborted_clients") + rate("Aborted_connects") : ""
   r_bpr = rate("Innodb_buffer_pool_reads"); r_wait = rate("Innodb_buffer_pool_wait_free")
   r_logw = rate("Innodb_log_waits"); r_tmp = rate("Created_tmp_tables"); r_tmpf = rate("Created_tmp_files")
@@ -1564,7 +1601,7 @@ END {
   if (have_prev && delta("Created_tmp_tables") >= 20) tmp_now = 100 * delta("Created_tmp_disk_tables") / delta("Created_tmp_tables")
 
   maxc = vars["max_connections"]
-  conn_pct = (maxc > 0) ? 100 * cur["Threads_connected"] / maxc : ""
+  conn_pct = (maxc > 0) ? 100 * thr_conn / maxc : ""
   peak_pct = (maxc > 0) ? 100 * cur["Max_used_connections"] / maxc : ""
   toc = vars["table_open_cache"]
   ot_pct = (toc > 0) ? 100 * cur["Open_tables"] / toc : ""
@@ -1587,7 +1624,7 @@ END {
   if (up) {
     pushHist("qps", r_q); pushHist("slow", r_slow); pushHist("scan", r_scan)
     pushHist("bpr", r_bpr); pushHist("tmp", r_tmp); pushHist("opened", r_opened)
-    pushHist("running", cur["Threads_running"])
+    pushHist("running", thr_running)
   }
 
   # ---------- Alerts ----------
@@ -1599,12 +1636,12 @@ END {
       addAlert(low(hit_now, 99, 95), sprintf("Buffer pool hit ratio %.2f%%: reads are going to disk. Consider a larger innodb_buffer_pool_size.", hit_now))
     if (r_wait > 0)
       addAlert(3, "Queries are waiting for free buffer pool pages. innodb_buffer_pool_size is too small.")
-    else if (bp_free_pct != "" && cur["Innodb_buffer_pool_pages_free"] == 0)
+    else if (bp_known && bp_free_pct != "" && cur["Innodb_buffer_pool_pages_free"] == 0)
       addAlert(2, "Buffer pool has no free pages. Consider raising innodb_buffer_pool_size.")
     if (r_logw > 0)
       addAlert(2, sprintf("InnoDB log waits %s/s. Consider raising innodb_log_buffer_size.", formatRate(r_logw)))
     if (conn_pct != "" && conn_pct >= 85)
-      addAlert(high(conn_pct, 85, 95), sprintf("%d of %d connections in use (%.0f%%).", cur["Threads_connected"], maxc, conn_pct))
+      addAlert(high(conn_pct, 85, 95), sprintf("%d of %d connections in use (%.0f%%).", thr_conn, maxc, conn_pct))
     else if (peak_pct != "" && peak_pct >= 85)
       addAlert(2, sprintf("Connections peaked at %.0f%% of max_connections (%d).", peak_pct, maxc))
     if (r_conn >= 1 && tc_now != "" && tc_now < 90)
@@ -1673,7 +1710,7 @@ END {
   print "@@STATE"
   printf "T %.0f\n", now
   if (cpu_total > 0) printf "cpu_total %.0f\ncpu_idle %.0f\n", cpu_total, cpu_idle
-  for (name in cur) printf "%s %.0f\n", name, cur[name]
+  for (name in have) printf "%s %.0f\n", name, cur[name]
   for (name in hist) printf "H_%s %s\n", name, hist[name]
   for (k = 1; k <= NT; k++)
     printf "D\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n", td[k], tcount[k], tsum[k], trex[k], trsent[k], ttmp[k], tsortm[k], tnoidx[k]
@@ -1682,6 +1719,10 @@ END {
 }
 AWK
 
+# Section marker for the awk input. A random one, so nothing a client can put in a
+# query text can forge a section boundary.
+MARK="@@$RANDOM$RANDOM$RANDOM@"
+
 # Collects a new sample; the only external command is mysqladmin.
 fetch() {
   local line
@@ -1689,15 +1730,15 @@ fetch() {
   printf -v clock '%(%H:%M:%S)T' -1
   sample=$(
     madmin extended-status variables processlist 2>&1
-    printf '@@MEMINFO\n'
+    printf '%sMEMINFO\n' "$MARK"
     [[ -r /proc/meminfo ]] && printf '%s\n' "$(</proc/meminfo)"
-    printf '@@CPU\n'
+    printf '%sCPU\n' "$MARK"
     if [[ -r /proc/stat ]]; then
       while read -r line && [[ $line == cpu* ]]; do printf '%s\n' "$line"; done < /proc/stat
     fi
-    printf '@@LOAD\n'
+    printf '%sLOAD\n' "$MARK"
     [[ -r /proc/loadavg ]] && printf '%s\n' "$(</proc/loadavg)"
-    if (( TOPQ )); then printf '@@TOP\n'; mtop 2>&1; fi
+    if (( TOPQ )); then printf '%sTOP\n' "$MARK"; mtop 2>&1; fi
   )
 }
 
@@ -1710,9 +1751,9 @@ render() {
         awk -v title="$TITLE" -v rows="$rows" -v cols="$cols" -v view="$VIEW" \
           -v interval="$INTERVAL" -v clock="$clock" -v unicode="$UNICODE" -v color="$COLOR" -v details="$DETAILS" -v scroll="$SCROLL" \
           -v paused="$PAUSED" -v psort="$PSORT" -v psleep="$PSLEEP" -v psel="$PSEL" -v pedit="$EDIT" \
-          -v topq="$TOPQ" -v tsort="$TSORT" \
-          "$RENDER_AWK" <<< "@@TIME $sample_time"$'\n'"@@PREV"$'\n'"$prev_state"$'\n'"@@CUR"$'\n'"$sample" 2>&1)
-  if [[ $out != *$'\n'@@STATE* ]]; then
+          -v topq="$TOPQ" -v tsort="$TSORT" -v marker="$MARK" \
+          "$RENDER_AWK" <<< "${MARK}TIME $sample_time"$'\n'"${MARK}PREV"$'\n'"$prev_state"$'\n'"${MARK}CUR"$'\n'"$sample" 2>&1)
+  if [[ $out != *$'\n'@@STATE$'\n'* ]]; then
     # awk failed: show its error instead of a blank screen, and keep the previous state
     frame="Internal error while drawing the screen:"$'\n'"$out"
     next_state=$prev_state
@@ -1725,7 +1766,7 @@ render() {
     meta=${out#*$'\n'@@PROC }
     read -r NPROC PSEL SELID SELDESC <<< "${meta%%$'\n'*}"
   fi
-  next_state=${out#*@@STATE$'\n'}
+  next_state=${out#*$'\n'@@STATE$'\n'}
 }
 
 # Draws the cached frame in place: home the cursor, overwrite each line, clear what is left.
@@ -1749,7 +1790,10 @@ draw() {
   printf '%s\033[J' "${buf%$'\n'}"
 }
 
-read_size() { read -r rows cols < <(stty size 2>/dev/null) || { rows=24; cols=80; }; }
+read_size() {
+  read -r rows cols < <(stty size 2>/dev/null < /dev/tty) || { rows=24; cols=80; }
+  (( rows > 0 && cols > 0 )) || { rows=24; cols=80; }
+}
 
 # Reads one keypress into KEY, decoding arrow/page/home/end escape sequences into
 # names (up, down, pgup, pgdn, home, end); a lone Esc becomes "esc".
@@ -1759,10 +1803,13 @@ read_key() {
   if [[ $k == "" ]]; then k=enter
   elif [[ $k == $'\x7f' || $k == $'\b' ]]; then k=bs
   elif [[ $k == $'\e' ]]; then
-    # The rest of an arrow/page key follows the Esc; allow for SSH latency
-    while read -t 0.05 -n 1 -s -r c; do
+    # The rest of an arrow/page key follows the Esc; allow for SSH latency, and once a
+    # sequence has clearly started, wait longer for its final byte
+    local t=0.05
+    while read -t "$t" -n 1 -s -r c; do
       seq+=$c
       [[ $c == [A-Za-z~] && ${#seq} -gt 1 ]] && break
+      t=0.25
     done
     case $seq in
       "[A"|"OA") k=up ;;      "[B"|"OB") k=down ;;
@@ -1786,7 +1833,17 @@ step_interval() {
   (( idx < 0 )) && idx=0
   (( idx >= n )) && idx=$(( n - 1 ))
   INTERVAL=${steps[idx]}
-  deadline=0
+  deadline=$(( sample_time + INTERVAL * 1000000 ))
+  refresh_soon
+}
+
+# Refreshes now, but never less than a second after the last sample, so rates are
+# not computed over a sliver of time.
+refresh_soon() {
+  local t=$(( sample_time + 1000000 ))
+  now_us
+  (( deadline > REPLY )) && (( deadline > t )) && (( deadline <= sample_time + INTERVAL * 1000000 )) && return
+  deadline=$(( t > REPLY ? t : REPLY ))
 }
 
 # Applies KEY to the view. Returns 1 when it changes nothing.
@@ -1801,7 +1858,7 @@ apply_key() {
       enter) EDIT=0; PFILTER=$EDITBUF ;;
       esc) EDIT=0 ;;
       bs) [[ -n $EDITBUF ]] || return 1; EDITBUF=${EDITBUF%?} ;;
-      ?) EDITBUF+=$KEY ;;
+      ?) [[ $KEY == [[:print:]] ]] || return 1; EDITBUF+=$KEY ;;
       *) return 1 ;;
     esac
     PSEL=1; SCROLL=0
@@ -1809,9 +1866,10 @@ apply_key() {
   fi
   if [[ -n $CONFIRM ]]; then
     if [[ $KEY == y || $KEY == Y ]]; then
-      if out=$(madmin kill "$KILL_ID" 2>&1); then MSG="Killed $KILL_ID."
+      if [[ ! $KILL_ID =~ ^[0-9]+$ ]]; then MSG="Not a valid connection id: $KILL_ID"
+      elif out=$(madmin kill "$KILL_ID" 2>&1); then MSG="Killed $KILL_ID."
       else MSG="Kill $KILL_ID failed: ${out//$'\n'/ }"; fi
-      deadline=0
+      refresh_soon
     fi
     CONFIRM=""
     return 0
@@ -1819,7 +1877,7 @@ apply_key() {
   MSG=""
   case $KEY in
     q|Q) exit 0 ;;
-    ' ') PAUSED=$(( ! PAUSED )); deadline=0; return 0 ;;
+    ' ') PAUSED=$(( ! PAUSED )); refresh_soon; return 0 ;;
     +|=) step_interval 1; return 0 ;;
     -|_) step_interval -1; return 0 ;;
     r|R) if [[ $VIEW == raw ]]; then VIEW=dashboard; else VIEW=raw; fi; SCROLL=0; return 0 ;;
@@ -1839,7 +1897,7 @@ apply_key() {
         PSEL=1; SCROLL=0 ;;
       f|F) [[ $VIEW == procs ]] || return 1; EDIT=1; EDITBUF=$PFILTER ;;
       c|C) [[ $VIEW == procs ]] || return 1; state=$(grep -v $'^Q\t' <<< "$state"); prev_state=$(grep -v $'^Q\t' <<< "$prev_state"); PSEL=1; SCROLL=0 ;;
-      k|K) [[ $VIEW == procs && $SELID != - ]] || return 1; KILL_ID=$SELID; CONFIRM="Kill $SELID ($SELDESC)?" ;;
+      k|K) [[ $VIEW == procs && $SELID =~ ^[0-9]+$ ]] || return 1; KILL_ID=$SELID; CONFIRM="Kill $SELID ($SELDESC)?" ;;
       down|j) (( PSEL < NPROC )) || return 1; (( PSEL += 1 )) ;;
       up)     (( PSEL > 1 )) || return 1; (( PSEL -= 1 )) ;;
       pgdn)   (( PSEL < NPROC )) || return 1; (( PSEL += page )) ;;
@@ -1874,10 +1932,8 @@ cleanup() {
   echo "Exiting MySQL Monitor. Goodbye!"
 }
 
-trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-trap 'resized=1' WINCH
 
 if (( ONCE )); then
   # One snapshot: two samples a second apart so the rates are real, printed in place.
@@ -1889,9 +1945,16 @@ if (( ONCE )); then
   sleep 1
   fetch; prev_state=$state; render
   printf '%s\n' "$frame"
-  trap - EXIT   # nothing to restore: the screen was never taken over
   exit 0
 fi
+
+if [[ ! -t 0 ]]; then
+  echo "Standard input is not a terminal. Use --once for non-interactive output." >&2
+  exit 1
+fi
+
+trap cleanup EXIT
+trap 'resized=1' WINCH
 
 # Keys pressed while a refresh is running must not be echoed onto the screen
 saved_stty=$(stty -g 2>/dev/null)

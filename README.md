@@ -65,7 +65,7 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 `tests/run.sh` checks every view at 20 terminal sizes with gawk, mawk and busybox awk, simulates key presses with SSH-like timing, and tries `--once`, all against a fake `mysqladmin` in `tests/bin`, so no MySQL server is needed. Run it after any change to the script.
 
 ## Requirements
-`bash`, `mysqladmin` and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.
+`bash` 4.2+, `mysqladmin` (or `mariadb-admin`) and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.
 
 The top queries view needs the `mysql` (or `mariadb`) client and SELECT on `performance_schema`. To see other users' queries, the MySQL user needs the `PROCESS` privilege (root has it); without it only that user's own queries are listed. Killing another user's query needs `SUPER` (or `CONNECTION_ADMIN`).
 
