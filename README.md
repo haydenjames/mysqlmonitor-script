@@ -1,7 +1,7 @@
 ## MySQL Monitor Script
-![MySQL Monitor Script Output](https://static.linuxblog.io/wp-content/uploads/2025/01/mysqlmonitor-script-3.png)
+![MySQL Monitor dashboard](docs/dashboard.png)
 
-This is a lightweight bash script designed to provide sysadmins and DBAs with a quick overview of MySQL metrics. It displays critical metrics like InnoDB buffer usage, query performance, and system memory, along with brief explanations of each variable.
+A lightweight bash script that gives sysadmins and DBAs a live view of a MySQL or MariaDB server from the terminal: throughput, connections, InnoDB buffer pool, temp tables, table cache and system load with per-second rates, sparklines and plain-English alerts, plus health checks with tuning advice, the process list, and the server's top queries. One file, no dependencies beyond `bash`, `awk` and the MySQL client tools.
 
 ## How to Install and Use
 Cut and paste each step.
@@ -41,6 +41,26 @@ Linuxblog.io: [MySQL Monitor: A Simple MySQL Monitoring Script](https://linuxblo
 A dashboard grouped into panels: throughput, connections, InnoDB buffer pool, temp tables & sorts, tables & locks, and system. Rates are per second since the last refresh, with sparklines of recent history, bars against configured limits (`max_connections`, `table_open_cache`) and ✓ / ⚠ / ✗ marks. An alerts box explains what needs attention and which setting to look at.
 
 The layout adapts to the terminal and shows as much as fits: up to three columns, detail lines with every counter's rate and total since boot when there are enough rows, a description of each metric when there is enough width, and a compact summary that fits 80×24. Panels are packed into columns by height, and any rows left over show the active queries, longest-running first (idle connections and background threads are hidden).
+
+### Screens
+
+**`h` Health checks**: every ratio and rate against its target, with the setting to change and a suggested value when one fails.
+
+![Health checks](docs/health.png)
+
+**`p` Processes**: what is running now, with sort, filter and kill, and the recent queries caught in earlier samples.
+
+![Processes](docs/processes.png)
+
+**`t` Top queries**: exact per-statement totals from `performance_schema`, differenced every refresh. This sees every query, including the millisecond ones the process list can never catch.
+
+![Top queries](docs/top-queries.png)
+
+**`r` Raw counters**: the classic table, and **`?` Help**.
+
+![Raw counters](docs/raw.png)
+
+![Help](docs/help.png)
 
 | Key | Action |
 | --- | --- |
