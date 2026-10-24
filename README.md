@@ -46,6 +46,8 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 | --- | --- |
 | `q` | Quit |
 | `r` | Toggle the raw counters table (the classic view) |
+| `↓` `↑` / `j` `k`, `PgDn` `PgUp`, `Home` `End` | Scroll. When the screen is too small for everything, the key bar shows `↓ More`: scrolling opens a single column with every metric and description, with the header and alerts kept in place |
+| `Esc` | Back from scrolling to the fitted dashboard |
 
 Set `NO_COLOR=1` to disable colors. Non-UTF-8 terminals get an ASCII version automatically.
 
