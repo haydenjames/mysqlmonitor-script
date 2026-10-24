@@ -700,10 +700,16 @@ function renderHealth(    W, lvl, x, n, eff) {
   hrow(high(r_fj, 1, 10), "Joins without indexes/s", formatRate(r_fj), bootRate("Select_full_join"), "~0",
        "Add indexes on the joined columns (Select_full_join).")
   x = (tmp_now != "") ? tmp_now : tmp_boot
-  eff = (vars["tmp_table_size"] < vars["max_heap_table_size"]) ? vars["tmp_table_size"] : vars["max_heap_table_size"]
-  hrow(high(x, 25, 50), "Temp tables on disk", pct(tmp_now), pct(tmp_boot), "< 25%",
-       sprintf("tmp_table_size / max_heap_table_size = %s / %s (the smaller applies). Try doubling both; BLOB/TEXT columns always spill to disk.",
-               formatBytes(vars["tmp_table_size"]), formatBytes(vars["max_heap_table_size"])))
+  # MySQL 8.0 builds internal temp tables with TempTable (limited by temptable_max_ram,
+  # and per table by tmp_table_size); MySQL 5.7 and MariaDB use MEMORY, where the smaller
+  # of tmp_table_size and max_heap_table_size applies and BLOB/TEXT always go to disk.
+  if (svars["version"] !~ /MariaDB/ && svars["version"] + 0 >= 8)
+    eff = sprintf("tmp_table_size = %s, temptable_max_ram = %s. Try raising both, and look for queries that build large temp tables.",
+                  formatBytes(vars["tmp_table_size"]), formatBytes(vars["temptable_max_ram"]))
+  else
+    eff = sprintf("tmp_table_size / max_heap_table_size = %s / %s (the smaller applies). Try raising both; BLOB/TEXT columns always go to disk.",
+                  formatBytes(vars["tmp_table_size"]), formatBytes(vars["max_heap_table_size"]))
+  hrow(high(x, 25, 50), "Temp tables on disk", pct(tmp_now), pct(tmp_boot), "< 25%", eff)
   hrow(high(r_smp, 1, 10), "Sort merge passes/s", formatRate(r_smp), bootRate("Sort_merge_passes"), "~0",
        sprintf("sort_buffer_size = %s. Raise it cautiously: it is allocated per sort.", formatBytes(vars["sort_buffer_size"])))
 
@@ -1408,7 +1414,7 @@ BEGIN {
   split("innodb_buffer_pool_size innodb_page_size max_connections table_open_cache hostname version " \
         "thread_cache_size tmp_table_size max_heap_table_size slow_query_log long_query_time " \
         "innodb_log_buffer_size open_files_limit sort_buffer_size key_buffer_size " \
-        "innodb_log_file_size innodb_log_files_in_group innodb_redo_log_capacity query_cache_type query_cache_size performance_schema", v, " ")
+        "innodb_log_file_size innodb_log_files_in_group innodb_redo_log_capacity query_cache_type query_cache_size performance_schema temptable_max_ram", v, " ")
   for (i in v) wanted_var[v[i]] = 1
 
   desc["Aborted_clients"]                  = "Failed client connections."
