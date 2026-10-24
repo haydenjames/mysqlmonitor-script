@@ -203,10 +203,11 @@ function pushHist(key, val,    n, a, i, s) {
   hist[key] = s
 }
 
-# One metric line: status mark, label, bold value, optional graphic, suffix and, when the
+# One metric line: status mark, label, value (bold in the warning/critical colour when it
+# needs attention), optional graphic, suffix and, when the
 # layout has room (SHOW_DESC), a description column.
 function L(lvl, label, value, graphic, suffix, desc,    s) {
-  s = " " mark(lvl) " " padR(label, LW) padL(paint(BOLD, value), VWD)
+  s = " " mark(lvl) " " padR(label, LW) padL((lvl >= 2) ? paint(BOLD levelColor(lvl), value) : value, VWD)
   if (SHOW_DESC && desc != "")
     return s "  " padR(graphic, GW) "  " padR(suffix, SW) "  " paint(ITAL, clip(desc, DW))
   if (graphic != "") s = s "  " graphic
@@ -562,7 +563,7 @@ BEGIN {
   HIST_MAX = 60
 
   # Dim is kept for decoration only (bar tracks, separators, rules): many terminal themes
-  # render it too dark to read, so text hierarchy comes from bold values and italic descriptions.
+  # render it too dark to read. Bold is reserved for values that need attention.
   if (color) {
     RED = "\033[31m"; GRN = "\033[32m"; YEL = "\033[33m"; CYN = "\033[36m"
     DIM = "\033[2m"; BOLD = "\033[1m"; ITAL = "\033[3m"; INV = "\033[7m"; RST = "\033[0m"
