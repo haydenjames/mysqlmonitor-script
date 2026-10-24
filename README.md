@@ -48,6 +48,7 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 | `?` | Help: keys, marks and what the numbers mean |
 | `h` | Health checks: each ratio and rate against its target, with the setting to change and a suggested value when one fails |
 | `p` | Processes: running queries, longest first. `o` cycles the sort (time, id, user, db), `s` shows sleeping connections, `f` filters as you type, `↑` `↓` select a row and `k` kills it after a confirmation. Below the live list, **recent queries** caught in earlier samples stay listed, newest first, grouped by shape (literals replaced) with how often and how long they ran, so repeats and slow ones stand out even when each connection is short-lived; `c` clears the history |
+| `t` | Top queries: exact per-statement totals from `performance_schema`, differenced every refresh. Calls/s, average and max latency, share of query time, rows examined per row sent, and tmp/sort/no-index flags; `o` sorts by time, calls, average or max; `↑` `↓` show a statement's full text. Unlike the sampled process list, this sees every query, including the millisecond ones. Needs the `mysql` client; `performance_schema` is on by default in MySQL 5.7/8.0 and needs `performance_schema = ON` on MariaDB |
 | `r` | Toggle the raw counters table (the classic view) |
 | `space` | Pause and resume refreshing (the header shows PAUSED) |
 | `+` `-` | Refresh faster or slower: 1, 2, 3, 5, 10, 15, 30 or 60 seconds |
@@ -66,7 +67,7 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 ## Requirements
 `bash`, `mysqladmin` and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.
 
-To see other users' queries, the MySQL user needs the `PROCESS` privilege (root has it); without it only that user's own queries are listed. Killing another user's query needs `SUPER` (or `CONNECTION_ADMIN`).
+The top queries view needs the `mysql` (or `mariadb`) client and SELECT on `performance_schema`. To see other users' queries, the MySQL user needs the `PROCESS` privilege (root has it); without it only that user's own queries are listed. Killing another user's query needs `SUPER` (or `CONNECTION_ADMIN`).
 
 ## Terminal size
 The screen is redrawn in place, so it no longer scrolls or flickers. If the window is too small to fit everything, the script tells you the size it needs and redraws as soon as you resize.

@@ -10,10 +10,11 @@ def sample():
     out = subprocess.run(["mysqladmin", "extended-status", "variables", "processlist"], capture_output=True, text=True, env=env).stdout
     mem = open("/proc/meminfo").read()
     cpu = "".join(l for l in open("/proc/stat") if l.startswith("cpu"))
-    return out + "@@MEMINFO\n" + mem + "@@CPU\n" + cpu + "@@LOAD\n" + open("/proc/loadavg").read()
+    top = subprocess.run(["mysql", "-B", "-N", "-e", "x"], capture_output=True, text=True, env=env).stdout
+    return out + "@@MEMINFO\n" + mem + "@@CPU\n" + cpu + "@@LOAD\n" + open("/proc/loadavg").read() + "@@TOP\n" + top
 def render(awk, rows, cols, prev, t, smp, color="1", view="dashboard", scroll=0, details=0):
     inp = f"@@TIME {t}\n@@PREV\n{prev}\n@@CUR\n{smp}"
-    p = subprocess.run(awk + ["-v", f"rows={rows}", "-v", f"cols={cols}", "-v", f"view={view}", "-v", f"scroll={scroll}", "-v", f"details={details}", "-v", "interval=5",
+    p = subprocess.run(awk + ["-v", f"rows={rows}", "-v", f"cols={cols}", "-v", f"view={view}", "-v", f"scroll={scroll}", "-v", f"details={details}", "-v", "topq=1", "-v", "interval=5",
                        "-v", "clock=09:00:00", "-v", "unicode=1", "-v", f"color={color}", "-v", "debug=1", awk_prog],
                        input=inp, capture_output=True, text=True, env=dict(env, LC_ALL="C"))
     body, state = p.stdout.split("\n@@STATE\n", 1); body = body.split("\n@@PROC ", 1)[0]
@@ -51,7 +52,7 @@ for cols, rows in sizes:
 print()
 print(f"{'size':>9} {'view':<16} {'used':>9} {'pos/max':>7} {'layout':<20} check")
 for cols, rows in sizes:
-    for view, details, scroll in (("dashboard", 1, 0), ("dashboard", 1, 15), ("dashboard", 1, 999999), ("raw", 0, 0), ("raw", 0, 999999), ("health", 0, 0), ("health", 0, 999999), ("help", 0, 0), ("procs", 0, 0)):
+    for view, details, scroll in (("dashboard", 1, 0), ("dashboard", 1, 15), ("dashboard", 1, 999999), ("raw", 0, 0), ("raw", 0, 999999), ("health", 0, 0), ("health", 0, 999999), ("help", 0, 0), ("procs", 0, 0), ("top", 0, 0)):
         outs = {}
         for name, awk in awks.items():
             _, st, _ = render(awk, rows, cols, "", 1_000_000_000, smp1, view=view, scroll=scroll, details=details)

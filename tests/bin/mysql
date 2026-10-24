@@ -1,0 +1,9 @@
+#!/bin/bash
+# Fake mysql client: answers the digest query with counters that grow with time.
+t=$(( $(date +%s) - 1761000000 ))
+r() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
+r a1b2c3 shop $((500000 + t*380)) $((600000000000000 + t*400000000000)) 84000000000 $((900000000 + t*900000)) $((800000 + t*380)) 0 0 0 1000000000 "SELECT \`option_name\` , \`option_value\` FROM \`wp_options\` WHERE \`autoload\` = ?"
+r d4e5f6 shop $((20000 + t*12)) $((300000000000000 + t*180000000000)) 2400000000000 $((2000000000 + t*4000000)) $((20000 + t*12)) $((300 + t/5)) 0 0 0 "SELECT \`o\` . \`id\` , \`c\` . \`name\` FROM \`orders\` \`o\` JOIN \`customers\` \`c\` ON \`c\` . \`id\` = \`o\` . \`cid\` WHERE \`o\` . \`status\` = ?"
+r 778899 stack_wp $((90000 + t*40)) $((50000000000000 + t*20000000000)) 9000000000 $((90000 + t*40)) $((90000 + t*40)) 0 0 0 0 "UPDATE \`wp_options\` SET \`option_value\` = ? WHERE \`option_name\` = ?"
+r aabbcc shop $((100 + t/30)) $((40000000000000 + t*8000000000)) 61000000000000 $((5000000000 + t*20000000)) $((100 + t/30)) 0 $((40 + t/60)) $((100 + t/30)) 0 "SELECT COUNT ( * ) FROM \`products\` \`p\` LEFT JOIN \`reviews\` \`r\` ON \`r\` . \`pid\` = \`p\` . \`id\` GROUP BY \`p\` . \`category\`"
+r 010203 "" 7 3000000000 900000000 0 7 0 0 0 0 "SET NAMES ?"

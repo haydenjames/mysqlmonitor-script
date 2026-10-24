@@ -90,6 +90,17 @@ else COLOR=1; fi
 # come first for mysqladmin to honour it, which the array order preserves.
 madmin() { command mysqladmin "${MYSQL_ARGS[@]}" "$@"; }
 
+# Exact per-statement totals from performance_schema, read with the mysql client once per
+# refresh and differenced against the previous sample for the top-queries view (t).
+TOP_SQL="SELECT DIGEST, IFNULL(SCHEMA_NAME,''), COUNT_STAR, SUM_TIMER_WAIT, MAX_TIMER_WAIT, SUM_ROWS_EXAMINED, SUM_ROWS_SENT, \
+SUM_CREATED_TMP_DISK_TABLES, SUM_SORT_MERGE_PASSES, SUM_NO_INDEX_USED, SUM_LOCK_TIME, DIGEST_TEXT \
+FROM performance_schema.events_statements_summary_by_digest \
+WHERE DIGEST_TEXT NOT LIKE 'SHOW %' AND DIGEST_TEXT NOT LIKE '%performance_schema%' \
+ORDER BY SUM_TIMER_WAIT DESC LIMIT 100"
+MYSQL_CLI=""
+for c in mysql mariadb; do command -v "$c" &>/dev/null && { MYSQL_CLI=$c; break; }; done
+mtop() { command "$MYSQL_CLI" "${MYSQL_ARGS[@]}" -B -N -e "$TOP_SQL"; }
+
 # Test if MySQL command requiring credentials succeeds
 if ! output=$(madmin status 2>&1); then
   # Check for .my.cnf
@@ -116,6 +127,16 @@ if ! output=$(madmin status 2>&1); then
     echo "Please verify your credentials or server status."
     exit 1
   fi
+fi
+
+# Can the top-queries view work here? Decided once; the view explains any failure.
+TOPQ=0; TOP_ERR=""
+if [[ -z $MYSQL_CLI ]]; then
+  TOP_ERR="The mysql client is not installed; it is needed to read performance_schema."
+elif top_out=$(mtop 2>&1); then
+  TOPQ=1
+else
+  TOP_ERR="performance_schema is not readable: ${top_out//$'\n'/ }"
 fi
 
 # Current time in microseconds (EPOCHREALTIME needs bash 5; fall back to whole seconds).
@@ -544,6 +565,8 @@ function keybar(mode, more, pos, w,    k, lvl, full) {
         k = k key("r", full ? ((view == "raw") ? "Dashboard" : (lvl == 1) ? "Raw counters" : "Raw") : "")
       }
       k = k key("p", full ? ((view == "procs") ? "Dashboard" : (lvl == 1) ? "Processes" : "Procs") : "")
+      k = k key("t", full ? ((view == "top") ? "Dashboard" : (lvl == 1) ? "Top queries" : "Top") : "")
+      if (view == "top") k = k key("o", full ? "Sort" : "") key(G_UP G_DOWN, full ? "Select" : "")
       if (mode == "fit" && more) k = k key("d", full ? "Details" : "")
       if (mode == "details") k = k key("d", full ? "Less" : "")
       if (view == "procs") {
@@ -848,6 +871,112 @@ function renderProcs(sel, off,    W, wide, hwide, i, k, lvl, t, h, line, vh, hdr
   return off
 }
 
+# ---------- Top queries view (performance_schema digests) ----------
+
+function fmtPs(ps,    sec) {
+  sec = ps / 1e12
+  if (sec >= 1)     return sprintf("%.2fs", sec)
+  if (sec >= 0.001) return sprintf("%.1fms", sec * 1000)
+  return sprintf("%.0f" G_MU "s", sec * 1e6)
+}
+
+function topBefore(a, b) {
+  if (tsort == "calls") return TC[a] > TC[b]
+  if (tsort == "avg")   return TS[a] / TC[a] > TS[b] / TC[b]
+  if (tsort == "max")   return tmax[TA[a]] > tmax[TA[b]]
+  return TS[a] > TS[b]
+}
+
+# Picks the statements with activity in this interval (or since boot on the first
+# sample) and sorts them. Fills TA (digest index), TC/TS/TR/TRS/TT/TSO/TN (deltas).
+function selectTop(    k, i, j, t, live, d) {
+  NTA = 0; TTOTAL = 0
+  live = (have_prev_top && have_prev)
+  TOP_LIVE = live
+  for (k = 1; k <= NT; k++) {
+    d = td[k]
+    if (live) {
+      if (!(d in pdcount)) continue
+      i = tcount[k] - pdcount[d]
+      if (i <= 0) continue
+      NTA++; TA[NTA] = k; TC[NTA] = i; TS[NTA] = tsum[k] - pdsum[d]
+      TR[NTA] = trex[k] - pdrex[d]; TRS[NTA] = trsent[k] - pdrsent[d]
+      TT[NTA] = ttmp[k] - pdtmp[d]; TSO[NTA] = tsortm[k] - pdsort[d]; TN[NTA] = tnoidx[k] - pdnoidx[d]
+    } else {
+      if (tcount[k] <= 0) continue
+      NTA++; TA[NTA] = k; TC[NTA] = tcount[k]; TS[NTA] = tsum[k]
+      TR[NTA] = trex[k]; TRS[NTA] = trsent[k]; TT[NTA] = ttmp[k]; TSO[NTA] = tsortm[k]; TN[NTA] = tnoidx[k]
+    }
+    if (TS[NTA] < 0) TS[NTA] = 0
+    TTOTAL += TS[NTA]
+  }
+  for (i = 1; i <= NTA; i++) TO[i] = i
+  for (i = 2; i <= NTA; i++) {
+    t = TO[i]
+    for (j = i - 1; j >= 1 && topBefore(t, TO[j]); j--) TO[j + 1] = TO[j]
+    TO[j + 1] = t
+  }
+}
+
+function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, flags, calls, sortname, wide) {
+  W = cols - 3
+  NO = 0
+  emit(header(W))
+  if (!topq) {
+    emit(ptitle("TOP QUERIES", W))
+    emit(" " mark(2) " " clip("Not available: " top_err, W - 3))
+    emit("")
+    emit("   This view reads performance_schema.events_statements_summary_by_digest with the mysql client.")
+    emit("   MySQL 5.7/8.0 have performance_schema on by default; MariaDB needs performance_schema = ON in")
+    emit("   my.cnf and a restart. The MySQL user needs SELECT on performance_schema.")
+    emit(keybar("view", 0, "", W))
+    NSEL = 0; PSEL_OUT = 0; SELID = "-"; SELDESC = "-"
+    return 0
+  }
+  selectTop()
+  NSEL = NTA
+  if (sel > NSEL) sel = NSEL
+  if (sel < 1) sel = (NSEL > 0) ? 1 : 0
+  wide = (W >= 110)
+  sortname = (tsort == "calls") ? "calls" : (tsort == "avg") ? "average latency" : (tsort == "max") ? "max latency" : "total time"
+  emit(ptitle(clip(sprintf("TOP QUERIES  by %s   %s   %d statements, %s of query time%s", sortname,
+                           TOP_LIVE ? "last " interval "s" : "since boot (first sample; live figures next refresh)",
+                           NTA, fmtPs(TTOTAL), (top_err != "") ? "   " top_err : ""), W - 4), W))
+  emit(paint(BOLD, clip("   " padL(TOP_LIVE ? "CALLS/s" : "CALLS", 8) padL("AVG", 8) padL("MAX", 8) padL("TIME%", 6) padL("EXAM/SENT", 10) \
+                        "  " (wide ? padR("FLAGS", 11) padR("SCHEMA", 11) : "") "QUERY", W)))
+  NC = 0
+  for (j = 1; j <= NTA; j++) {
+    i = TO[j]; k = TA[i]
+    avg = TS[i] / TC[i] / 1e12
+    ratio = (TRS[i] > 0) ? TR[i] / TRS[i] : ((TR[i] > 0) ? TR[i] : "")
+    flags = ((TT[i] > 0) ? "tmp " : "") ((TSO[i] > 0) ? "sort " : "") ((TN[i] > 0) ? "noidx" : "")
+    lvl = high(avg, 0.1, 1)
+    if (ratio != "" && ratio >= 1000) lvl = worse(lvl, 2)
+    if (TT[i] > 0 || TN[i] > 0) lvl = worse(lvl, 2)
+    if (lvl < 1) lvl = 1
+    calls = TOP_LIVE ? formatRate(TC[i] / elapsed) : formatNumber(TC[i])
+    line = padL(calls, 8) padL(fmtPs(TS[i] / TC[i]), 8) padL(fmtPs(tmax[k]), 8) \
+           padL((TTOTAL > 0) ? sprintf("%.0f%%", 100 * TS[i] / TTOTAL) : "-", 6) \
+           padL((ratio == "") ? "-" : (TRS[i] > 0) ? formatNumber(ratio) : formatNumber(ratio) "/0", 10) "  "
+    if (wide) line = line padR(flags, 11) padR(clip(tschema[k], 10), 11)
+    line = line clip(ttext[k], W - 3 - vw(line))
+    if (j == sel) CONT[++NC] = paint(INV, " " G_PTR " " padR(line, W - 3))
+    else CONT[++NC] = " " mark(lvl) " " line
+  }
+  if (NTA == 0) CONT[++NC] = " " mark(1) " " paint(GRN, TOP_LIVE ? "No statements ran in the last " interval "s" : "No statements recorded")
+  detail = (sel > 0) ? " " G_PTR " " ttext[TA[TO[sel]]] : ""
+  vh = rows - 4 - ((detail != "") ? 2 : 0); if (vh < 1) vh = 1
+  if (sel > 0) { if (sel - 1 < off) off = sel - 1; if (sel > off + vh) off = sel - vh }
+  off = viewport(off, vh, W)
+  if (detail != "") {
+    emit(clipStyled(paint(DIM, clip(detail, W)), W))
+    emit(clipStyled("   " paint(DIM, clip(substr(detail, W + 1), W - 3)), W))
+  }
+  emit(clipStyled(keybar("top", 0, "", W), W))
+  PSEL_OUT = sel; SELID = "-"; SELDESC = "-"
+  return off
+}
+
 # ---------- Help view ----------
 
 function helpKey(k, text) { emit("   " padR(paint(INV, " " k " "), 12 + (color ? 11 : 0)) text) }
@@ -865,6 +994,9 @@ function renderHelp(    W) {
   helpKey("p", "Processes: sort (o), show sleepers (s), filter (f), select (" G_UP G_DOWN ") and kill (k)")
   emit("                Below the live list, recent queries caught in earlier samples stay listed,")
   emit("                grouped by shape with how often and how long they ran (c clears them).")
+  helpKey("t", "Top queries: exact per-statement totals from performance_schema, differenced every")
+  emit("                refresh: calls/s, average and max latency, share of time, rows examined per row sent;")
+  emit("                o sorts by time, calls, average or max. Needs the mysql client and performance_schema.")
   helpKey("space", "Pause and resume refreshing")
   helpKey("+ -", "Refresh faster or slower (1, 2, 3, 5, 10, 15, 30, 60 seconds)")
   helpKey("Esc", "Back to the dashboard")
@@ -1202,7 +1334,7 @@ function layoutBest(    c, cand, cf, minw, maxw, n, colw) {
 BEGIN {
   HIST_MAX = 60
   MAXQ = 40        # remembered query patterns
-  pfilter = ENVIRON["MM_FILTER"]; confirm = ENVIRON["MM_CONFIRM"]; msg = ENVIRON["MM_MSG"]
+  pfilter = ENVIRON["MM_FILTER"]; confirm = ENVIRON["MM_CONFIRM"]; msg = ENVIRON["MM_MSG"]; top_err = ENVIRON["MM_TOPERR"]
   DESC_MIN = 84    # narrowest column that fits descriptions (without the graphic)
 
   # Dim is kept for decoration only (bar tracks, separators, rules): many terminal themes
@@ -1213,11 +1345,11 @@ BEGIN {
   }
   if (unicode) {
     G_FULL = "█"; G_EMPTY = "░"; G_OK = "✓"; G_WARN = "⚠"; G_CRIT = "✗"
-    G_DOT = "●"; G_SEP = "▸"; G_H = "─"; G_V = "│"; G_ELL = "…"; G_UP = "↑"; G_DOWN = "↓"; G_ARROW = "→"; G_PTR = "▶"
+    G_DOT = "●"; G_SEP = "▸"; G_H = "─"; G_V = "│"; G_ELL = "…"; G_UP = "↑"; G_DOWN = "↓"; G_ARROW = "→"; G_PTR = "▶"; G_MU = "µ"
     split("_ ▁ ▂ ▃ ▄ ▅ ▆", SPK, " "); SPK[1] = " "
   } else {
     G_FULL = "#"; G_EMPTY = "."; G_OK = "+"; G_WARN = "!"; G_CRIT = "x"
-    G_DOT = "*"; G_SEP = ">"; G_H = "-"; G_V = "|"; G_ELL = "~"; G_UP = "Up"; G_DOWN = "Dn"; G_ARROW = "->"; G_PTR = ">"
+    G_DOT = "*"; G_SEP = ">"; G_H = "-"; G_V = "|"; G_ELL = "~"; G_UP = "Up"; G_DOWN = "Dn"; G_ARROW = "->"; G_PTR = ">"; G_MU = "u"
     split("_ _ - = + * #", SPK, " "); SPK[1] = " "
   }
 
@@ -1295,6 +1427,13 @@ BEGIN {
 /^@@[A-Z]+/ { section = substr($1, 3); if (section == "TIME") now = $2; next }
 
 section == "PREV" {
+  if ($1 == "D") {
+    # Previous digest totals: D digest count sum rows_ex rows_sent tmp sort noidx
+    n = split($0, f, "\t"); k = f[2]
+    pdcount[k] = f[3] + 0; pdsum[k] = f[4] + 0; pdrex[k] = f[5] + 0; pdrsent[k] = f[6] + 0
+    pdtmp[k] = f[7] + 0; pdsort[k] = f[8] + 0; pdnoidx[k] = f[9] + 0; have_prev_top = 1
+    next
+  }
   if ($1 == "Q") {
     # Remembered query: Q fp last count max user db lastid live text (tab-separated)
     n = split($0, f, "\t"); k = ++NQH
@@ -1342,6 +1481,16 @@ section == "CPU" {
 }
 
 section == "LOAD" { load = $1 " " $2 " " $3; load1 = $1; next }
+
+section == "TOP" {
+  if (index($0, "\t") == 0) { if ($0 != "") top_err = (top_err == "") ? $0 : top_err " " $0; next }
+  n = split($0, f, "\t"); if (n < 12) next
+  k = ++NT
+  td[k] = f[1]; tschema[k] = f[2]; tcount[k] = f[3] + 0; tsum[k] = f[4] + 0; tmax[k] = f[5] + 0
+  trex[k] = f[6] + 0; trsent[k] = f[7] + 0; ttmp[k] = f[8] + 0; tsortm[k] = f[9] + 0; tnoidx[k] = f[10] + 0; tlock[k] = f[11] + 0
+  ttext[k] = f[12]; for (i = 13; i <= n; i++) ttext[k] = ttext[k] " " f[i]
+  next
+}
 
 END {
   up = ("Uptime" in cur)
@@ -1498,6 +1647,7 @@ END {
     CHOSEN = "raw"
   }
   else if (view == "procs") { SCROLL_OUT = renderProcs(psel, scroll); CHOSEN = "procs" }
+  else if (view == "top") { SCROLL_OUT = renderTop(psel, scroll); CHOSEN = "top" }
   else if (view == "health" || view == "help") {
     if (view == "health") renderHealth(); else renderHelp()
     NC = NO; for (i = 1; i <= NO; i++) CONT[i] = OUT[i]
@@ -1519,6 +1669,8 @@ END {
   if (cpu_total > 0) printf "cpu_total %.0f\ncpu_idle %.0f\n", cpu_total, cpu_idle
   for (name in cur) printf "%s %.0f\n", name, cur[name]
   for (name in hist) printf "H_%s %s\n", name, hist[name]
+  for (k = 1; k <= NT; k++)
+    printf "D\t%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n", td[k], tcount[k], tsum[k], trex[k], trsent[k], ttmp[k], tsortm[k], tnoidx[k]
   for (k = 1; k <= NQH; k++)
     printf "Q\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%s\n", qfp[k], qlast[k], qcount[k], qmax[k], quser[k], qdb[k], qlastid[k], qlive[k], qtext[k]
 }
@@ -1539,6 +1691,7 @@ fetch() {
     fi
     printf '@@LOAD\n'
     [[ -r /proc/loadavg ]] && printf '%s\n' "$(</proc/loadavg)"
+    if (( TOPQ )); then printf '@@TOP\n'; mtop 2>&1; fi
   )
 }
 
@@ -1547,10 +1700,11 @@ render() {
   local out
   local filter=$PFILTER
   (( EDIT )) && filter=$EDITBUF
-  out=$(LC_ALL=C MM_FILTER=$filter MM_CONFIRM=$CONFIRM MM_MSG=$MSG \
+  out=$(LC_ALL=C MM_FILTER=$filter MM_CONFIRM=$CONFIRM MM_MSG=$MSG MM_TOPERR=$TOP_ERR \
         awk -v title="$TITLE" -v rows="$rows" -v cols="$cols" -v view="$VIEW" \
           -v interval="$INTERVAL" -v clock="$clock" -v unicode="$UNICODE" -v color="$COLOR" -v details="$DETAILS" -v scroll="$SCROLL" \
           -v paused="$PAUSED" -v psort="$PSORT" -v psleep="$PSLEEP" -v psel="$PSEL" -v pedit="$EDIT" \
+          -v topq="$TOPQ" -v tsort="$TSORT" \
           "$RENDER_AWK" <<< "@@TIME $sample_time"$'\n'"@@PREV"$'\n'"$prev_state"$'\n'"@@CUR"$'\n'"$sample" 2>&1)
   if [[ $out != *$'\n'@@STATE* ]]; then
     # awk failed: show its error instead of a blank screen, and keep the previous state
@@ -1561,7 +1715,7 @@ render() {
   frame=${out%%$'\n'@@SCROLL *}
   local meta=${out#*$'\n'@@SCROLL }
   read -r SCROLL MAXOFF MORE <<< "${meta%%$'\n'*}"
-  if [[ $VIEW == procs ]]; then
+  if [[ $VIEW == procs || $VIEW == top ]]; then
     meta=${out#*$'\n'@@PROC }
     read -r NPROC PSEL SELID SELDESC <<< "${meta%%$'\n'*}"
   fi
@@ -1665,16 +1819,21 @@ apply_key() {
     r|R) if [[ $VIEW == raw ]]; then VIEW=dashboard; else VIEW=raw; fi; SCROLL=0; return 0 ;;
     h|H) if [[ $VIEW == health ]]; then VIEW=dashboard; else VIEW=health; fi; SCROLL=0; return 0 ;;
     p|P) if [[ $VIEW == procs ]]; then VIEW=dashboard; else VIEW=procs; PSEL=1; fi; SCROLL=0; return 0 ;;
+    t|T) if [[ $VIEW == top ]]; then VIEW=dashboard; else VIEW=top; PSEL=1; fi; SCROLL=0; return 0 ;;
     '?') if [[ $VIEW == help ]]; then VIEW=dashboard; else VIEW=help; fi; SCROLL=0; return 0 ;;
     esc) [[ $VIEW != dashboard ]] || (( DETAILS )) || return 1; VIEW=dashboard; DETAILS=0; SCROLL=0; return 0 ;;
   esac
-  if [[ $VIEW == procs ]]; then
+  if [[ $VIEW == procs || $VIEW == top ]]; then
+    # List views: a selection instead of a scroll offset; awk keeps it visible
     case $KEY in
-      s|S) PSLEEP=$(( ! PSLEEP )); PSEL=1; SCROLL=0 ;;
-      o|O) case $PSORT in time) PSORT=id ;; id) PSORT=user ;; user) PSORT=db ;; *) PSORT=time ;; esac; PSEL=1; SCROLL=0 ;;
-      f|F) EDIT=1; EDITBUF=$PFILTER ;;
-      c|C) state=$(grep -v $'^Q\t' <<< "$state"); prev_state=$(grep -v $'^Q\t' <<< "$prev_state"); PSEL=1; SCROLL=0 ;;
-      k|K) [[ $SELID != - ]] || return 1; KILL_ID=$SELID; CONFIRM="Kill $SELID ($SELDESC)?" ;;
+      s|S) [[ $VIEW == procs ]] || return 1; PSLEEP=$(( ! PSLEEP )); PSEL=1; SCROLL=0 ;;
+      o|O)
+        if [[ $VIEW == procs ]]; then case $PSORT in time) PSORT=id ;; id) PSORT=user ;; user) PSORT=db ;; *) PSORT=time ;; esac
+        else case $TSORT in time) TSORT=calls ;; calls) TSORT=avg ;; avg) TSORT=max ;; *) TSORT=time ;; esac; fi
+        PSEL=1; SCROLL=0 ;;
+      f|F) [[ $VIEW == procs ]] || return 1; EDIT=1; EDITBUF=$PFILTER ;;
+      c|C) [[ $VIEW == procs ]] || return 1; state=$(grep -v $'^Q\t' <<< "$state"); prev_state=$(grep -v $'^Q\t' <<< "$prev_state"); PSEL=1; SCROLL=0 ;;
+      k|K) [[ $VIEW == procs && $SELID != - ]] || return 1; KILL_ID=$SELID; CONFIRM="Kill $SELID ($SELDESC)?" ;;
       down|j) (( PSEL < NPROC )) || return 1; (( PSEL += 1 )) ;;
       up)     (( PSEL > 1 )) || return 1; (( PSEL -= 1 )) ;;
       pgdn)   (( PSEL < NPROC )) || return 1; (( PSEL += page )) ;;
@@ -1719,7 +1878,7 @@ if (( ONCE )); then
   read_size
   [[ -t 1 ]] || { rows=${LINES:-50}; cols=${COLUMNS:-120}; }
   state=""; VIEW=dashboard; DETAILS=0; SCROLL=0; PAUSED=0
-  PSORT=time PSLEEP=0 PFILTER="" PSEL=1 EDIT=0 EDITBUF="" CONFIRM="" MSG=""
+  PSORT=time PSLEEP=0 PFILTER="" PSEL=1 EDIT=0 EDITBUF="" CONFIRM="" MSG="" TSORT=time
   fetch; prev_state=$state; render; state=$next_state
   sleep 1
   fetch; prev_state=$state; render
@@ -1743,7 +1902,7 @@ SCROLL=0
 MAXOFF=0
 MORE=0
 PAUSED=0
-PSORT=time PSLEEP=0 PFILTER="" PSEL=1 NPROC=0 SELID=- SELDESC=-
+PSORT=time PSLEEP=0 PFILTER="" PSEL=1 NPROC=0 SELID=- SELDESC=- TSORT=time
 EDIT=0 EDITBUF="" CONFIRM="" KILL_ID="" MSG=""
 read_size
 
