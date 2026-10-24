@@ -47,7 +47,7 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 | `q` | Quit |
 | `?` | Help: keys, marks and what the numbers mean |
 | `h` | Health checks: each ratio and rate against its target, with the setting to change and a suggested value when one fails |
-| `p` | Processes: running queries, longest first. `o` cycles the sort (time, id, user, db), `s` shows sleeping connections, `f` filters as you type, `↑` `↓` select a row and `k` kills it after a confirmation |
+| `p` | Processes: running queries, longest first. `o` cycles the sort (time, id, user, db), `s` shows sleeping connections, `f` filters as you type, `↑` `↓` select a row and `k` kills it after a confirmation. Below the live list, **recent queries** caught in earlier samples stay listed, newest first, grouped by shape (literals replaced) with how often and how long they ran, so repeats and slow ones stand out even when each connection is short-lived; `c` clears the history |
 | `r` | Toggle the raw counters table (the classic view) |
 | `space` | Pause and resume refreshing (the header shows PAUSED) |
 | `+` `-` | Refresh faster or slower: 1, 2, 3, 5, 10, 15, 30 or 60 seconds |

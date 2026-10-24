@@ -211,6 +211,7 @@ function colpad(s, w) { if (vw(s) > w) OVER++; return padR(s, w) }
 function padL(s, w) { return rep(" ", w - vw(s)) s }
 # Shortens plain (unstyled) text to w columns without splitting a UTF-8 character.
 function clip(s, w,    i, n, c, out) {
+  if (w < 1) return ""
   if (vw(s) <= w) return s
   n = 0; out = ""
   for (i = 1; i <= length(s); i++) {
@@ -547,7 +548,7 @@ function keybar(mode, more, pos, w,    k, lvl, full) {
       if (mode == "details") k = k key("d", full ? "Less" : "")
       if (view == "procs") {
         k = k key("s", full ? (psleep ? "Hide sleepers" : "Sleepers") : "") key("o", full ? "Sort" : "")
-        k = k key("f", full ? "Filter" : "") key("k", full ? "Kill" : "") key(G_UP G_DOWN, full ? "Select" : "")
+        k = k key("f", full ? "Filter" : "") key("k", full ? "Kill" : "") key("c", full ? "Clear" : "") key(G_UP G_DOWN, full ? "Select" : "")
       }
       if (lvl == 1 && (mode == "fit" || mode == "details")) k = k key("space", paused ? "Resume" : "Pause")
     }
@@ -702,6 +703,66 @@ function selectProcs(    i, j, t, c, f, hay) {
   }
 }
 
+# ---------- Query history: what has run in recent samples ----------
+
+# Groups the same statement with different literals: strings and numbers become ?,
+# IN-lists collapse, so repeats can be counted.
+function fingerprint(q,    f) {
+  f = tolower(q)
+  gsub(/\\./, "", f)
+  gsub(/'[^']*'/, "?", f); gsub(/"[^"]*"/, "?", f)
+  gsub(/[0-9]+/, "?", f)
+  gsub(/\?( *, *\?)+/, "?+", f)
+  gsub(/  +/, " ", f)
+  return substr(f, 1, 300)
+}
+
+function dropQ(i,    k) {
+  delete qidx[qfp[i]]
+  for (k = i; k < NQH; k++) {
+    qfp[k] = qfp[k + 1]; qlast[k] = qlast[k + 1]; qcount[k] = qcount[k + 1]; qmax[k] = qmax[k + 1]
+    quser[k] = quser[k + 1]; qdb[k] = qdb[k + 1]; qlastid[k] = qlastid[k + 1]; qlive[k] = qlive[k + 1]; qtext[k] = qtext[k + 1]
+    qidx[qfp[k]] = k
+  }
+  NQH--
+}
+
+# Records every running client query in this sample. A query seen in consecutive
+# samples on the same connection is one run; it counts again when it starts anew.
+function noteQueries(    i, fp, k, nowS, oldest, oi) {
+  nowS = int(now / 1000000)
+  for (k = 1; k <= NQH; k++) qseen[k] = 0
+  for (i = 1; i <= np; i++) {
+    if (pcmd[i] == "Sleep" || pcmd[i] == "Daemon" || pcmd[i] ~ /^Binlog Dump/ || puser[i] == "system user" || puser[i] == "event_scheduler") continue
+    if (pinfo[i] == "" || tolower(pinfo[i]) ~ /^show (full )?processlist/) continue
+    fp = fingerprint(pinfo[i])
+    k = (fp in qidx) ? qidx[fp] : 0
+    if (k == 0) { k = ++NQH; qidx[fp] = k; qfp[k] = fp; qcount[k] = 0; qmax[k] = 0; qlive[k] = 0; qlastid[k] = "" }
+    if (!(qlive[k] && qlastid[k] == pid[i])) qcount[k]++
+    if (ptime[i] > qmax[k]) qmax[k] = ptime[i]
+    qlast[k] = nowS; quser[k] = puser[i]; qdb[k] = pdb[i]; qtext[k] = substr(pinfo[i], 1, 300); qlastid[k] = pid[i]
+    qseen[k] = 1
+  }
+  for (k = 1; k <= NQH; k++) qlive[k] = qseen[k]
+  while (NQH > MAXQ) {
+    oldest = qlast[1]; oi = 1
+    for (k = 2; k <= NQH; k++) if (qlast[k] < oldest) { oldest = qlast[k]; oi = k }
+    dropQ(oi)
+  }
+}
+
+# Sort order for the history: newest first, then most often seen.
+function sortHistory(    i, j, t) {
+  for (i = 1; i <= NQH; i++) RO[i] = i
+  for (i = 2; i <= NQH; i++) {
+    t = RO[i]
+    for (j = i - 1; j >= 1 && (qlast[RO[j]] < qlast[t] || (qlast[RO[j]] == qlast[t] && qcount[RO[j]] < qcount[t])); j--) RO[j + 1] = RO[j]
+    RO[j + 1] = t
+  }
+}
+
+function ago(sec) { return (sec < 5) ? "now" : fmtDur(sec) " ago" }
+
 # The line shown instead of the key bar while a prompt is open.
 function promptLine() {
   if (pedit) return " " paint(BOLD, "Filter: ") pfilter paint(INV, " ") "   Enter apply   Esc cancel"
@@ -709,13 +770,16 @@ function promptLine() {
   return ""
 }
 
-# Full-screen process list with a selected row; sel is clamped and the list scrolled
-# so the selection stays visible. Sets PSEL_OUT, SELID and SELDESC for the kill prompt.
-function renderProcs(sel, off,    W, wide, i, k, lvl, t, h, line, vh, hdr, last) {
+# Full-screen process list with a selected row, then the recent-query history; the
+# selection spans both lists and stays visible. Sets PSEL_OUT, SELID (live rows only)
+# and SELDESC for the kill prompt, and NSEL for the key handler.
+function renderProcs(sel, off,    W, wide, hwide, i, k, lvl, t, h, line, vh, hdr, last, nowS, base, q, detail) {
   W = cols - 3
-  selectProcs()
-  if (sel > NPO) sel = NPO
-  if (sel < 1) sel = (NPO > 0) ? 1 : 0
+  selectProcs(); sortHistory()
+  nowS = int(now / 1000000)
+  NSEL = NPO + NQH
+  if (sel > NSEL) sel = NSEL
+  if (sel < 1) sel = (NSEL > 0) ? 1 : 0
   wide = (W >= 100)
   NO = 0
   emit(header(W))
@@ -738,12 +802,40 @@ function renderProcs(sel, off,    W, wide, i, k, lvl, t, h, line, vh, hdr, last)
     line = line clip((pinfo[i] != "") ? pinfo[i] : pcmd[i], W - 3 - vw(line))
     if (k == sel) CONT[++NC] = paint(INV, " " G_PTR " " padR(line, W - 3))
     else CONT[++NC] = " " mark(lvl) " " line
+    ROWLINE[k] = NC
   }
   if (NPO == 0) CONT[++NC] = " " mark(1) " " paint(GRN, (pfilter != "") ? "No processes match the filter" : \
                                "No client processes right now" ((nself == 0 && np == 0) ? " (processlist empty: PROCESS privilege?)" : ""))
-  vh = rows - 4; if (vh < 1) vh = 1
-  if (sel > 0) { if (sel - 1 < off) off = sel - 1; if (sel > off + vh) off = sel - vh }
+  # Recent queries: what was caught running in earlier samples, newest first
+  CONT[++NC] = ""
+  CONT[++NC] = ptitle(clip(sprintf("RECENT QUERIES  %d patterns remembered from %ds samples, newest first   repeats grouped by shape", NQH, interval), W - 4), W)
+  hwide = (W >= 80)
+  CONT[++NC] = paint(BOLD, clip("   " padR("LAST SEEN", 11) padL("SEEN", 5) padL("MAX", 8) "  " (hwide ? padR("USER", 11) padR("DB", 13) : "") "QUERY", W))
+  base = NPO
+  for (k = 1; k <= NQH; k++) {
+    q = RO[k]
+    lvl = (qmax[q] >= 60) ? 3 : (qmax[q] >= 10) ? 2 : 0
+    line = padR(ago(nowS - qlast[q]), 11) padL("x" qcount[q], 5) padL(fmtDur(qmax[q]), 8) "  "
+    if (hwide) line = line padR(clip(quser[q], 10), 11) padR(clip(qdb[q], 12), 13)
+    line = line clip(qtext[q], W - 3 - vw(line))
+    if (base + k == sel) CONT[++NC] = paint(INV, " " G_PTR " " padR(line, W - 3))
+    else CONT[++NC] = " " mark(lvl) " " line
+    ROWLINE[base + k] = NC
+  }
+  if (NQH == 0) CONT[++NC] = "   " paint(ITAL, "Nothing seen yet. Queries caught in a sample stay listed here; press c to clear.")
+  # Full text of the selected query above the key bar (rows are clipped)
+  detail = ""
+  if (sel > 0) {
+    detail = (sel <= NPO) ? ((pinfo[PO[sel]] != "") ? pinfo[PO[sel]] : pcmd[PO[sel]]) : qtext[RO[sel - NPO]]
+    detail = " " G_PTR " " detail
+  }
+  vh = rows - 4 - ((detail != "") ? 2 : 0); if (vh < 1) vh = 1
+  if (sel > 0) { k = ROWLINE[sel]; if (k - 1 < off) off = k - 1; if (k > off + vh) off = k - vh }
   off = viewport(off, vh, W)
+  if (detail != "") {
+    emit(clipStyled(paint(DIM, clip(detail, W)), W))
+    emit(clipStyled("   " paint(DIM, clip(substr(detail, W + 1), W - 3)), W))
+  }
   last = promptLine()
   if (last == "") {
     last = keybar("procs", 0, "", W)
@@ -751,8 +843,8 @@ function renderProcs(sel, off,    W, wide, i, k, lvl, t, h, line, vh, hdr, last)
   }
   emit(clipStyled(last, W))
   PSEL_OUT = sel
-  SELID = (sel > 0) ? pid[PO[sel]] : "-"
-  SELDESC = (sel > 0) ? puser[PO[sel]] "@" phost[PO[sel]] ", " fmtDur(ptime[PO[sel]]) : "-"
+  SELID = (sel > 0 && sel <= NPO) ? pid[PO[sel]] : "-"
+  SELDESC = (sel > 0 && sel <= NPO) ? puser[PO[sel]] "@" phost[PO[sel]] ", " fmtDur(ptime[PO[sel]]) : "-"
   return off
 }
 
@@ -771,6 +863,8 @@ function renderHelp(    W) {
   helpKey("d", "Details: every counter and description (when the dashboard had to leave some out)")
   helpKey(G_UP G_DOWN, "Scroll a view that is taller than the window (also j k, PgUp PgDn, Home End)")
   helpKey("p", "Processes: sort (o), show sleepers (s), filter (f), select (" G_UP G_DOWN ") and kill (k)")
+  emit("                Below the live list, recent queries caught in earlier samples stay listed,")
+  emit("                grouped by shape with how often and how long they ran (c clears them).")
   helpKey("space", "Pause and resume refreshing")
   helpKey("+ -", "Refresh faster or slower (1, 2, 3, 5, 10, 15, 30, 60 seconds)")
   helpKey("Esc", "Back to the dashboard")
@@ -1107,6 +1201,7 @@ function layoutBest(    c, cand, cf, minw, maxw, n, colw) {
 
 BEGIN {
   HIST_MAX = 60
+  MAXQ = 40        # remembered query patterns
   pfilter = ENVIRON["MM_FILTER"]; confirm = ENVIRON["MM_CONFIRM"]; msg = ENVIRON["MM_MSG"]
   DESC_MIN = 84    # narrowest column that fits descriptions (without the graphic)
 
@@ -1200,7 +1295,14 @@ BEGIN {
 /^@@[A-Z]+/ { section = substr($1, 3); if (section == "TIME") now = $2; next }
 
 section == "PREV" {
-  if ($1 ~ /^H_/) hist[substr($1, 3)] = $2
+  if ($1 == "Q") {
+    # Remembered query: Q fp last count max user db lastid live text (tab-separated)
+    n = split($0, f, "\t"); k = ++NQH
+    qfp[k] = f[2]; qlast[k] = f[3] + 0; qcount[k] = f[4] + 0; qmax[k] = f[5] + 0
+    quser[k] = f[6]; qdb[k] = f[7]; qlastid[k] = f[8]; qlive[k] = f[9] + 0; qtext[k] = f[10]
+    qidx[qfp[k]] = k
+  }
+  else if ($1 ~ /^H_/) hist[substr($1, 3)] = $2
   else if ($1 != "") prev[$1] = $2 + 0
   next
 }
@@ -1381,6 +1483,7 @@ END {
   for (i = 1; i <= NAL; i++) if (ALV[i] == 2) nwarn++
 
   selectQueries()
+  if (up) noteQueries()
 
   # ---------- Output ----------
   NO = 0
@@ -1407,7 +1510,7 @@ END {
   # Scroll position after clamping, the furthest it can scroll, and whether the
   # fitted dashboard hides anything (so 'd' is offered)
   print "@@SCROLL " SCROLL_OUT " " MAXOFF " " (MORE + 0)
-  print "@@PROC " (NPO + 0) " " (PSEL_OUT + 0) " " ((SELID == "") ? "-" : SELID) " " ((SELDESC == "") ? "-" : SELDESC)
+  print "@@PROC " (NSEL + 0) " " (PSEL_OUT + 0) " " ((SELID == "") ? "-" : SELID) " " ((SELDESC == "") ? "-" : SELDESC)
   # Layout report for the size test harness (-v debug=1)
   if (debug) printf "LAYOUT %s|%d|%d|%d\n", CHOSEN, NO, QROWS, OVER > "/dev/stderr"
 
@@ -1416,6 +1519,8 @@ END {
   if (cpu_total > 0) printf "cpu_total %.0f\ncpu_idle %.0f\n", cpu_total, cpu_idle
   for (name in cur) printf "%s %.0f\n", name, cur[name]
   for (name in hist) printf "H_%s %s\n", name, hist[name]
+  for (k = 1; k <= NQH; k++)
+    printf "Q\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%s\n", qfp[k], qlast[k], qcount[k], qmax[k], quser[k], qdb[k], qlastid[k], qlive[k], qtext[k]
 }
 AWK
 
@@ -1568,6 +1673,7 @@ apply_key() {
       s|S) PSLEEP=$(( ! PSLEEP )); PSEL=1; SCROLL=0 ;;
       o|O) case $PSORT in time) PSORT=id ;; id) PSORT=user ;; user) PSORT=db ;; *) PSORT=time ;; esac; PSEL=1; SCROLL=0 ;;
       f|F) EDIT=1; EDITBUF=$PFILTER ;;
+      c|C) state=$(grep -v $'^Q\t' <<< "$state"); prev_state=$(grep -v $'^Q\t' <<< "$prev_state"); PSEL=1; SCROLL=0 ;;
       k|K) [[ $SELID != - ]] || return 1; KILL_ID=$SELID; CONFIRM="Kill $SELID ($SELDESC)?" ;;
       down|j) (( PSEL < NPROC )) || return 1; (( PSEL += 1 )) ;;
       up)     (( PSEL > 1 )) || return 1; (( PSEL -= 1 )) ;;
