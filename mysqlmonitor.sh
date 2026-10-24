@@ -477,7 +477,7 @@ function renderRaw(    i, name, label, extra, color, width, line) {
 
 function header(w,    left, right, parts, n, i, st) {
   st = (!up) ? "DOWN" : (status == 3) ? "CRITICAL" : (status == 2) ? nwarn " WARN" : "OK"
-  right = paint(levelColor(up ? worse(status, 1) : 3), G_DOT " " st) "   " interval "s   " clock " "
+  right = paint(levelColor(up ? worse(status, 1) : 3), G_DOT " " st) "   " (paused ? paint(BOLD YEL, "PAUSED") : interval "s") "   " clock " "
   n = 0
   parts[++n] = paint(BOLD, " MySQL Monitor")
   if (host != "")   parts[++n] = host
@@ -507,11 +507,20 @@ function keybar(mode, more, pos, w,    k, lvl, full) {
     if (view == "help") {
       k = k key("?", full ? "Back" : "")
     } else {
-      k = k key("?", full ? "Help" : "")
-      k = k key("h", full ? ((view == "health") ? "Dashboard" : "Health") : "")
-      k = k key("r", full ? ((view == "raw") ? "Dashboard" : (lvl == 1) ? "Raw counters" : "Raw") : "")
+      # Keys-only level in the process view drops the other view switches to fit
+      if (!(lvl == 4 && view == "procs")) {
+        k = k key("?", full ? "Help" : "")
+        k = k key("h", full ? ((view == "health") ? "Dashboard" : "Health") : "")
+        k = k key("r", full ? ((view == "raw") ? "Dashboard" : (lvl == 1) ? "Raw counters" : "Raw") : "")
+      }
+      k = k key("p", full ? ((view == "procs") ? "Dashboard" : (lvl == 1) ? "Processes" : "Procs") : "")
       if (mode == "fit" && more) k = k key("d", full ? "Details" : "")
       if (mode == "details") k = k key("d", full ? "Less" : "")
+      if (view == "procs") {
+        k = k key("s", full ? (psleep ? "Hide sleepers" : "Sleepers") : "") key("o", full ? "Sort" : "")
+        k = k key("f", full ? "Filter" : "") key("k", full ? "Kill" : "") key(G_UP G_DOWN, full ? "Select" : "")
+      }
+      if (lvl == 1 && (mode == "fit" || mode == "details")) k = k key("space", paused ? "Resume" : "Pause")
     }
     if (pos != "") k = k key(G_UP G_DOWN, (lvl == 1) ? "PgUp PgDn Scroll" : (lvl < 4) ? "Scroll" : "") ((lvl < 4) ? " " pos : "")
     if (vw(k) <= w) break
@@ -613,6 +622,91 @@ function renderHealth(    W, lvl, x, n, eff) {
   emit(paint(ITAL, " 'now' ratios appear once an interval holds enough events to judge."))
 }
 
+# ---------- Processlist view ----------
+
+function procBefore(a, b) {
+  if (psort == "id")   return pid[a] + 0 < pid[b] + 0
+  if (psort == "user") return (puser[a] < puser[b]) || (puser[a] == puser[b] && ptime[a] > ptime[b])
+  if (psort == "db")   return (pdb[a] < pdb[b]) || (pdb[a] == pdb[b] && ptime[a] > ptime[b])
+  return ptime[a] > ptime[b]
+}
+
+# Builds PO: the processes to list, after the sleeper/filter options, in sort order.
+function selectProcs(    i, j, t, c, f, hay) {
+  NPO = 0; nrun = 0
+  f = tolower(pfilter)
+  for (i = 1; i <= np; i++) {
+    c = pcmd[i]
+    if (c == "Daemon" || c ~ /^Binlog Dump/ || puser[i] == "system user" || puser[i] == "event_scheduler") continue
+    if (tolower(pinfo[i]) ~ /^show (full )?processlist/) continue
+    if (c != "Sleep") nrun++
+    if (c == "Sleep" && !psleep) continue
+    if (f != "") {
+      hay = tolower(pid[i] " " puser[i] " " phost[i] " " pdb[i] " " pstate[i] " " pinfo[i] " " c)
+      if (index(hay, f) == 0) continue
+    }
+    PO[++NPO] = i
+  }
+  for (i = 2; i <= NPO; i++) {
+    t = PO[i]
+    for (j = i - 1; j >= 1 && procBefore(t, PO[j]); j--) PO[j + 1] = PO[j]
+    PO[j + 1] = t
+  }
+}
+
+# The line shown instead of the key bar while a prompt is open.
+function promptLine() {
+  if (pedit) return " " paint(BOLD, "Filter: ") pfilter paint(INV, " ") "   Enter apply   Esc cancel"
+  if (confirm != "") return " " paint(BOLD YEL, confirm) "   " key("y", "Yes") key("n", "No")
+  return ""
+}
+
+# Full-screen process list with a selected row; sel is clamped and the list scrolled
+# so the selection stays visible. Sets PSEL_OUT, SELID and SELDESC for the kill prompt.
+function renderProcs(sel, off,    W, wide, i, k, lvl, t, h, line, vh, hdr, last) {
+  W = cols - 3
+  selectProcs()
+  if (sel > NPO) sel = NPO
+  if (sel < 1) sel = (NPO > 0) ? 1 : 0
+  wide = (W >= 100)
+  NO = 0
+  emit(header(W))
+  emit(ptitle(clip(sprintf("PROCESSES  %d shown   %d running, %d sleeping%s   sort: %s%s", NPO, nrun, nsleep,
+                      psleep ? "" : " (hidden)", (psort == "") ? "time" : psort,
+                      (pfilter != "" && !pedit) ? "   filter: " pfilter : ""), W - 4), W))
+  hdr = "   " padR("ID", 9) padR("USER", 11) (wide ? padR("HOST", 16) : "") padR("DB", 13) (wide ? padR("CMD", 8) : "") \
+        padL("TIME", 7) "  " (wide ? padR("STATE", 20) : "") "QUERY"
+  emit(paint(BOLD, clip(hdr, W)))
+  NC = 0
+  for (k = 1; k <= NPO; k++) {
+    i = PO[k]; t = ptime[i]
+    lvl = (pcmd[i] == "Sleep") ? 0 : (t >= 60) ? 3 : (t >= 10) ? 2 : 0
+    line = padR(clip(pid[i], 8), 9) padR(clip(puser[i], 10), 11)
+    if (wide) { h = phost[i]; sub(/:[0-9]+$/, "", h); line = line padR(clip(h, 15), 16) }
+    line = line padR(clip(pdb[i], 12), 13)
+    if (wide) line = line padR(clip(pcmd[i], 7), 8)
+    line = line padL(fmtDur(t), 7) "  "
+    if (wide) line = line padR(clip(pstate[i], 19), 20)
+    line = line clip((pinfo[i] != "") ? pinfo[i] : pcmd[i], W - 3 - vw(line))
+    if (k == sel) CONT[++NC] = paint(INV, " " G_PTR " " padR(line, W - 3))
+    else CONT[++NC] = " " mark(lvl) " " line
+  }
+  if (NPO == 0) CONT[++NC] = " " mark(1) " " paint(GRN, (pfilter != "") ? "No processes match the filter" : "No client processes")
+  vh = rows - 4; if (vh < 1) vh = 1
+  if (sel > 0) { if (sel - 1 < off) off = sel - 1; if (sel > off + vh) off = sel - vh }
+  off = viewport(off, vh, W)
+  last = promptLine()
+  if (last == "") {
+    last = keybar("procs", 0, "", W)
+    if (msg != "") last = clipStyled(" " paint(BOLD GRN, msg) " " last, W)
+  }
+  emit(clipStyled(last, W))
+  PSEL_OUT = sel
+  SELID = (sel > 0) ? pid[PO[sel]] : "-"
+  SELDESC = (sel > 0) ? puser[PO[sel]] "@" phost[PO[sel]] ", " fmtDur(ptime[PO[sel]]) : "-"
+  return off
+}
+
 # ---------- Help view ----------
 
 function helpKey(k, text) { emit("   " padR(paint(INV, " " k " "), 12 + (color ? 11 : 0)) text) }
@@ -627,6 +721,9 @@ function renderHelp(    W) {
   helpKey("r", "Raw counters: the classic table")
   helpKey("d", "Details: every counter and description (when the dashboard had to leave some out)")
   helpKey(G_UP G_DOWN, "Scroll a view that is taller than the window (also j k, PgUp PgDn, Home End)")
+  helpKey("p", "Processes: sort (o), show sleepers (s), filter (f), select (" G_UP G_DOWN ") and kill (k)")
+  helpKey("space", "Pause and resume refreshing")
+  helpKey("+ -", "Refresh faster or slower (1, 2, 3, 5, 10, 15, 30, 60 seconds)")
   helpKey("Esc", "Back to the dashboard")
   emit("")
   emit(paint(BOLD CYN, " Marks"))
@@ -958,6 +1055,7 @@ function layoutBest(    c, cand, cf, minw, maxw, n, colw) {
 
 BEGIN {
   HIST_MAX = 60
+  pfilter = ENVIRON["MM_FILTER"]; confirm = ENVIRON["MM_CONFIRM"]; msg = ENVIRON["MM_MSG"]
   DESC_MIN = 84    # narrowest column that fits descriptions (without the graphic)
 
   # Dim is kept for decoration only (bar tracks, separators, rules): many terminal themes
@@ -968,11 +1066,11 @@ BEGIN {
   }
   if (unicode) {
     G_FULL = "█"; G_EMPTY = "░"; G_OK = "✓"; G_WARN = "⚠"; G_CRIT = "✗"
-    G_DOT = "●"; G_SEP = "▸"; G_H = "─"; G_V = "│"; G_ELL = "…"; G_UP = "↑"; G_DOWN = "↓"; G_ARROW = "→"
+    G_DOT = "●"; G_SEP = "▸"; G_H = "─"; G_V = "│"; G_ELL = "…"; G_UP = "↑"; G_DOWN = "↓"; G_ARROW = "→"; G_PTR = "▶"
     split("_ ▁ ▂ ▃ ▄ ▅ ▆", SPK, " "); SPK[1] = " "
   } else {
     G_FULL = "#"; G_EMPTY = "."; G_OK = "+"; G_WARN = "!"; G_CRIT = "x"
-    G_DOT = "*"; G_SEP = ">"; G_H = "-"; G_V = "|"; G_ELL = "~"; G_UP = "Up"; G_DOWN = "Dn"; G_ARROW = "->"
+    G_DOT = "*"; G_SEP = ">"; G_H = "-"; G_V = "|"; G_ELL = "~"; G_UP = "Up"; G_DOWN = "Dn"; G_ARROW = "->"; G_PTR = ">"
     split("_ _ - = + * #", SPK, " "); SPK[1] = " "
   }
 
@@ -1224,6 +1322,7 @@ END {
     emit(keybar("raw", 0, (MAXOFF > 0) ? posText(SCROLL_OUT, rows - 1) : "", cols - 1))
     CHOSEN = "raw"
   }
+  else if (view == "procs") { SCROLL_OUT = renderProcs(psel, scroll); CHOSEN = "procs" }
   else if (view == "health" || view == "help") {
     if (view == "health") renderHealth(); else renderHelp()
     NC = NO; for (i = 1; i <= NO; i++) CONT[i] = OUT[i]
@@ -1236,6 +1335,7 @@ END {
   # Scroll position after clamping, the furthest it can scroll, and whether the
   # fitted dashboard hides anything (so 'd' is offered)
   print "@@SCROLL " SCROLL_OUT " " MAXOFF " " (MORE + 0)
+  print "@@PROC " (NPO + 0) " " (PSEL_OUT + 0) " " ((SELID == "") ? "-" : SELID) " " ((SELDESC == "") ? "-" : SELDESC)
   # Layout report for the size test harness (-v debug=1)
   if (debug) printf "LAYOUT %s|%d|%d|%d\n", CHOSEN, NO, QROWS, OVER > "/dev/stderr"
 
@@ -1268,8 +1368,12 @@ fetch() {
 # Lays out the current sample for the current terminal size and view.
 render() {
   local out
-  out=$(LC_ALL=C awk -v title="$TITLE" -v rows="$rows" -v cols="$cols" -v view="$VIEW" \
+  local filter=$PFILTER
+  (( EDIT )) && filter=$EDITBUF
+  out=$(LC_ALL=C MM_FILTER=$filter MM_CONFIRM=$CONFIRM MM_MSG=$MSG \
+        awk -v title="$TITLE" -v rows="$rows" -v cols="$cols" -v view="$VIEW" \
           -v interval="$INTERVAL" -v clock="$clock" -v unicode="$UNICODE" -v color="$COLOR" -v details="$DETAILS" -v scroll="$SCROLL" \
+          -v paused="$PAUSED" -v psort="$PSORT" -v psleep="$PSLEEP" -v psel="$PSEL" -v pedit="$EDIT" \
           "$RENDER_AWK" <<< "@@TIME $sample_time"$'\n'"@@PREV"$'\n'"$prev_state"$'\n'"@@CUR"$'\n'"$sample" 2>&1)
   if [[ $out != *$'\n'@@STATE* ]]; then
     # awk failed: show its error instead of a blank screen, and keep the previous state
@@ -1280,6 +1384,10 @@ render() {
   frame=${out%%$'\n'@@SCROLL *}
   local meta=${out#*$'\n'@@SCROLL }
   read -r SCROLL MAXOFF MORE <<< "${meta%%$'\n'*}"
+  if [[ $VIEW == procs ]]; then
+    meta=${out#*$'\n'@@PROC }
+    read -r NPROC PSEL SELID SELDESC <<< "${meta%%$'\n'*}"
+  fi
   next_state=${out#*@@STATE$'\n'}
 }
 
@@ -1310,8 +1418,10 @@ read_size() { read -r rows cols < <(stty size 2>/dev/null) || { rows=24; cols=80
 # names (up, down, pgup, pgdn, home, end); a lone Esc becomes "esc".
 read_key() {
   local k c seq=""
-  read -t "$1" -n 1 -s -r k || return 1
-  if [[ $k == $'\e' ]]; then
+  IFS= read -t "$1" -n 1 -s -r k || return 1
+  if [[ $k == "" ]]; then k=enter
+  elif [[ $k == $'\x7f' || $k == $'\b' ]]; then k=bs
+  elif [[ $k == $'\e' ]]; then
     # The rest of an arrow/page key follows the Esc; allow for SSH latency
     while read -t 0.05 -n 1 -s -r c; do
       seq+=$c
@@ -1329,21 +1439,79 @@ read_key() {
   KEY=$k
 }
 
+# Steps the refresh interval through fixed values and refreshes at once.
+step_interval() {
+  local steps=(1 2 3 5 10 15 30 60) i n idx=-1
+  n=${#steps[@]}
+  for (( i = 0; i < n; i++ )); do (( steps[i] >= INTERVAL )) && { idx=$i; break; }; done
+  (( idx < 0 )) && idx=$(( n - 1 ))
+  if (( $1 > 0 )); then (( steps[idx] == INTERVAL )) && (( idx++ )); else (( idx-- )); fi
+  (( idx < 0 )) && idx=0
+  (( idx >= n )) && idx=$(( n - 1 ))
+  INTERVAL=${steps[idx]}
+  deadline=0
+}
+
 # Applies KEY to the view. Returns 1 when it changes nothing.
 # 'd' toggles the details view (offered when the fitted dashboard hides something).
-# Scroll keys move SCROLL within 0..MAXOFF, which awk reports for the current view.
+# Scroll keys move SCROLL within 0..MAXOFF, which awk reports for the current view;
+# in the process view they move the selection instead.
 apply_key() {
-  local page=$(( rows > 12 ? rows - 8 : 4 ))
+  local page=$(( rows > 12 ? rows - 8 : 4 )) out
+  # A prompt takes every key while it is open
+  if (( EDIT )); then
+    case $KEY in
+      enter) EDIT=0; PFILTER=$EDITBUF ;;
+      esc) EDIT=0 ;;
+      bs) [[ -n $EDITBUF ]] || return 1; EDITBUF=${EDITBUF%?} ;;
+      ?) EDITBUF+=$KEY ;;
+      *) return 1 ;;
+    esac
+    PSEL=1; SCROLL=0
+    return 0
+  fi
+  if [[ -n $CONFIRM ]]; then
+    if [[ $KEY == y || $KEY == Y ]]; then
+      if out=$(mysqladmin kill "$KILL_ID" 2>&1); then MSG="Killed $KILL_ID."
+      else MSG="Kill $KILL_ID failed: ${out//$'\n'/ }"; fi
+      deadline=0
+    fi
+    CONFIRM=""
+    return 0
+  fi
+  MSG=""
   case $KEY in
     q|Q) exit 0 ;;
-    r|R) if [[ $VIEW == raw ]]; then VIEW=dashboard; else VIEW=raw; fi; SCROLL=0 ;;
-    h|H) if [[ $VIEW == health ]]; then VIEW=dashboard; else VIEW=health; fi; SCROLL=0 ;;
-    '?') if [[ $VIEW == help ]]; then VIEW=dashboard; else VIEW=help; fi; SCROLL=0 ;;
+    ' ') PAUSED=$(( ! PAUSED )); deadline=0; return 0 ;;
+    +|=) step_interval 1; return 0 ;;
+    -|_) step_interval -1; return 0 ;;
+    r|R) if [[ $VIEW == raw ]]; then VIEW=dashboard; else VIEW=raw; fi; SCROLL=0; return 0 ;;
+    h|H) if [[ $VIEW == health ]]; then VIEW=dashboard; else VIEW=health; fi; SCROLL=0; return 0 ;;
+    p|P) if [[ $VIEW == procs ]]; then VIEW=dashboard; else VIEW=procs; PSEL=1; fi; SCROLL=0; return 0 ;;
+    '?') if [[ $VIEW == help ]]; then VIEW=dashboard; else VIEW=help; fi; SCROLL=0; return 0 ;;
+    esc) [[ $VIEW != dashboard ]] || (( DETAILS )) || return 1; VIEW=dashboard; DETAILS=0; SCROLL=0; return 0 ;;
+  esac
+  if [[ $VIEW == procs ]]; then
+    case $KEY in
+      s|S) PSLEEP=$(( ! PSLEEP )); PSEL=1; SCROLL=0 ;;
+      o|O) case $PSORT in time) PSORT=id ;; id) PSORT=user ;; user) PSORT=db ;; *) PSORT=time ;; esac; PSEL=1; SCROLL=0 ;;
+      f|F) EDIT=1; EDITBUF=$PFILTER ;;
+      k|K) [[ $SELID != - ]] || return 1; KILL_ID=$SELID; CONFIRM="Kill $SELID ($SELDESC)?" ;;
+      down|j) (( PSEL < NPROC )) || return 1; (( PSEL += 1 )) ;;
+      up)     (( PSEL > 1 )) || return 1; (( PSEL -= 1 )) ;;
+      pgdn)   (( PSEL < NPROC )) || return 1; (( PSEL += page )) ;;
+      pgup)   (( PSEL > 1 )) || return 1; (( PSEL = PSEL > page ? PSEL - page : 1 )) ;;
+      home)   (( PSEL > 1 )) || return 1; PSEL=1 ;;
+      end)    (( PSEL < NPROC )) || return 1; PSEL=$NPROC ;;
+      *) return 1 ;;
+    esac
+    return 0
+  fi
+  case $KEY in
     d|D)
       [[ $VIEW == dashboard ]] || return 1
       if (( DETAILS )); then DETAILS=0; elif (( MORE )); then DETAILS=1; else return 1; fi
       SCROLL=0 ;;
-    esc) [[ $VIEW != dashboard ]] || (( DETAILS )) || return 1; VIEW=dashboard; DETAILS=0; SCROLL=0 ;;
     down|j) (( SCROLL < MAXOFF )) || return 1; (( SCROLL += 1 )) ;;
     pgdn)   (( SCROLL < MAXOFF )) || return 1; (( SCROLL += page )) ;;
     end)    (( SCROLL < MAXOFF )) || return 1; SCROLL=$MAXOFF ;;
@@ -1382,22 +1550,28 @@ DETAILS=0
 SCROLL=0
 MAXOFF=0
 MORE=0
+PAUSED=0
+PSORT=time PSLEEP=0 PFILTER="" PSEL=1 NPROC=0 SELID=- SELDESC=-
+EDIT=0 EDITBUF="" CONFIRM="" KILL_ID="" MSG=""
 read_size
 
 # First refresh comes after 1 second so per-second rates appear quickly.
 first_wait=1
 
 while true; do
-  fetch
-  prev_state=$state
-  render
-  state=$next_state
-  draw
+  if (( ! PAUSED )); then
+    fetch
+    prev_state=$state
+    render
+    state=$next_state
+    draw
+  fi
 
   # Wait for the next refresh in short slices so resizes redraw immediately.
   # Resizes and view changes re-render the same sample instead of querying the server again.
   now_us
   deadline=$(( REPLY + ${first_wait:-$INTERVAL} * 1000000 ))
+  (( PAUSED )) && deadline=$(( REPLY + 3600 * 1000000 ))
   first_wait=""
   while true; do
     if (( resized )); then

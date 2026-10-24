@@ -47,7 +47,10 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 | `q` | Quit |
 | `?` | Help: keys, marks and what the numbers mean |
 | `h` | Health checks: each ratio and rate against its target, with the setting to change and a suggested value when one fails |
+| `p` | Processes: running queries, longest first. `o` cycles the sort (time, id, user, db), `s` shows sleeping connections, `f` filters as you type, `↑` `↓` select a row and `k` kills it after a confirmation |
 | `r` | Toggle the raw counters table (the classic view) |
+| `space` | Pause and resume refreshing (the header shows PAUSED) |
+| `+` `-` | Refresh faster or slower: 1, 2, 3, 5, 10, 15, 30 or 60 seconds |
 | `d` | Details: every counter and its description, in as many columns as fit the width. Offered when the fitted dashboard had to leave something out; `d` or `Esc` returns |
 | `↓` `↑` / `j` `k`, `PgDn` `PgUp`, `Home` `End` | Scroll, whenever a view is taller than the window. The header and alerts stay in place |
 
@@ -56,7 +59,7 @@ The layout adapts to the terminal and shows as much as fits: up to three columns
 ## Requirements
 `bash`, `mysqladmin` and any POSIX `awk` (gawk, mawk or busybox awk). CPU, load and memory are read from `/proc`.
 
-To see other users' queries in the active queries panel, the MySQL user needs the `PROCESS` privilege (root has it). Without it, only that user's own queries are listed.
+To see other users' queries, the MySQL user needs the `PROCESS` privilege (root has it); without it only that user's own queries are listed. Killing another user's query needs `SUPER` (or `CONNECTION_ADMIN`).
 
 ## Terminal size
 The screen is redrawn in place, so it no longer scrolls or flickers. If the window is too small to fit everything, the script tells you the size it needs and redraws as soon as you resize.
