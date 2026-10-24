@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2026.10.23.01 (Press 'q' to exit)"
+TITLE="MySQL Monitor v2026.10.23.02 (Press 'q' to exit)"
 
 # Define minimum terminal width. The required height is measured from the frame itself.
 MIN_COLS=50
@@ -30,6 +30,11 @@ if [[ $# -ge 1 ]]; then
     echo "Invalid interval specified. Using default INTERVAL=$INTERVAL seconds."
   fi
 fi
+
+# Use Unicode glyphs only in a UTF-8 locale, and honour NO_COLOR (https://no-color.org).
+locale_name="${LC_ALL:-${LC_CTYPE:-$LANG}}"
+if [[ $locale_name =~ [Uu][Tt][Ff]-?8 ]]; then UNICODE=1; else UNICODE=0; fi
+if [[ -n $NO_COLOR ]]; then COLOR=0; else COLOR=1; fi
 
 # Test if MySQL command requiring credentials succeeds
 if ! output=$(mysqladmin status 2>&1); then
@@ -72,7 +77,8 @@ now_us() {
 #   @@TIME (now, µs)  @@PREV (state from the previous frame)  @@CUR (mysqladmin output)
 #   @@MEMINFO (/proc/meminfo)  @@CPU (/proc/stat cpu line)  @@LOAD (/proc/loadavg)
 # Prints the frame, then "@@STATE" followed by the state to feed back in next time.
-# Written for POSIX awk: works with gawk, mawk and busybox awk.
+# Written for POSIX awk (gawk, mawk, busybox awk) and run with LC_ALL=C, so strings are
+# bytes everywhere; vw() measures on-screen width by skipping UTF-8 continuation bytes.
 read -r -d '' RENDER_AWK <<'AWK'
 function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
 
@@ -92,6 +98,14 @@ function prettyTime(sec,    years, months, days, hours, minutes, seconds, out) {
   if (minutes > 0) out = out minutes "m "
   if (seconds > 0) out = out seconds "s"
   return (out == "") ? "0s" : trim(out)
+}
+
+# The two largest units only, for the header ("12d 4h", "3h 20m", "5m 12s").
+function shortTime(sec,    d, h, m) {
+  d = int(sec / 86400); h = int((sec % 86400) / 3600); m = int((sec % 3600) / 60)
+  if (d > 0) return d "d " h "h"
+  if (h > 0) return h "h " m "m"
+  return m "m " int(sec % 60) "s"
 }
 
 # Converts large numbers into user-friendly formats (K, M, B, T)
@@ -115,7 +129,7 @@ function formatBytes(b) {
   return sprintf("%.0f MB", b / 1048576)
 }
 
-function pct(x) { return (x == "") ? "-" : sprintf("%.1f%%", x) }
+function pct(x)  { return (x == "") ? "-" : sprintf("%.1f%%", x) }
 function pct2(x) { return (x == "") ? "-" : sprintf("%.2f%%", x) }
 
 # Per-second change of a counter since the previous frame ("" when unknown).
@@ -126,6 +140,111 @@ function rate(name,    d) {
 }
 
 function delta(name) { return cur[name] - prev[name] }
+
+# ---------- Drawing helpers ----------
+
+function vw(s,    t) {
+  t = s
+  gsub(/\033\[[0-9;]*m/, "", t)
+  gsub(/[\200-\277]/, "", t)
+  return length(t)
+}
+
+function rep(ch, n,    s) { s = ""; while (n-- > 0) s = s ch; return s }
+function padR(s, w) { return s rep(" ", w - vw(s)) }
+function padL(s, w) { return rep(" ", w - vw(s)) s }
+# Shortens plain (unstyled) text to w columns.
+function clip(s, w) { return (vw(s) <= w) ? s : substr(s, 1, w - 1) G_ELL }
+function paint(c, s) { return (c == "" || s == "") ? s : c s RST }
+
+# Severity levels: 0 none, 1 ok, 2 warning, 3 critical
+function levelColor(l) { return (l == 3) ? RED : (l == 2) ? YEL : GRN }
+function mark(l) { return (l == 0) ? " " : paint(levelColor(l), (l == 3) ? G_CRIT : (l == 2) ? G_WARN : G_OK) }
+function worse(a, b) { return (a > b) ? a : b }
+
+# Level for a value where higher is worse / lower is worse ("" means unknown: no mark).
+function high(x, warn, crit) { return (x == "") ? 0 : (x >= crit) ? 3 : (x >= warn) ? 2 : 1 }
+function low(x, warn, crit)  { return (x == "") ? 0 : (x < crit) ? 3 : (x < warn) ? 2 : 1 }
+
+function bar(p, w, warn, crit,    f, c) {
+  if (w <= 0) return ""
+  if (p == "") return rep(" ", w)
+  f = int(p * w / 100 + 0.5)
+  if (f > w) f = w
+  if (f < 0) f = 0
+  c = (p >= crit) ? RED : (p >= warn) ? YEL : GRN
+  return paint(c, rep(G_FULL, f)) paint(DIM, rep(G_EMPTY, w - f))
+}
+
+# Sparkline of the last w samples, scaled from 0 to the window's peak but never below
+# floor, so a steady low value doesn't fill the whole bar.
+function spark(key, w, floor,    n, a, i, start, mx, s, idx) {
+  if (w <= 0) return ""
+  n = (hist[key] == "") ? 0 : split(hist[key], a, ",")
+  start = (n > w) ? n - w + 1 : 1
+  mx = floor
+  for (i = start; i <= n; i++) if (a[i] + 0 > mx) mx = a[i] + 0
+  s = ""
+  for (i = start; i <= n; i++) {
+    idx = (mx > 0) ? int(a[i] / mx * 7 + 0.5) + 1 : 1
+    s = s SPK[idx]
+  }
+  return padR(paint(CYN, s), w)
+}
+
+function pushHist(key, val,    n, a, i, s) {
+  if (val == "") return
+  s = (hist[key] == "") ? sprintf("%.2f", val) : hist[key] "," sprintf("%.2f", val)
+  n = split(s, a, ",")
+  if (n > HIST_MAX) {
+    s = a[n - HIST_MAX + 1]
+    for (i = n - HIST_MAX + 2; i <= n; i++) s = s "," a[i]
+  }
+  hist[key] = s
+}
+
+# One metric line: status mark, label, value, optional graphic, dim suffix and, when the
+# layout has room (SHOW_DESC), a description column.
+function L(lvl, label, value, graphic, suffix, desc,    s) {
+  s = " " mark(lvl) " " padR(label, LW) padL(value, VWD)
+  if (SHOW_DESC && desc != "")
+    return s "  " padR(graphic, GW) "  " padR(paint(DIM, suffix), SW) "  " paint(DIM ITAL, clip(desc, DW))
+  if (graphic != "") s = s "  " graphic
+  if (suffix != "") s = s "  " paint(DIM, suffix)
+  return s
+}
+
+# Rate line for a counter, with its total since boot as the suffix.
+function R(lvl, label, name, graphic, desc) {
+  return L(lvl, label, formatRate(rate(name)), graphic, "total " formatNumber(cur[name]), desc)
+}
+
+# Detail lines only appear when the layout has room for them (SHOW_DETAIL).
+function pd(s) { if (SHOW_DETAIL) pl(s) }
+
+function setWidths(colw, compact) {
+  if (compact) {
+    LW = 9; VWD = 8; GW = colw - 3 - LW - VWD - 2 - 2 - 6; if (GW > 12) GW = 12
+  } else if (SHOW_DESC) {
+    LW = 13; VWD = 10; SW = 22
+    GW = colw - (3 + LW + VWD + 2 + 2 + SW + 2) - 36; if (GW > 24) GW = 24
+    DW = colw - (3 + LW + VWD + 2 + GW + 2 + SW + 2)
+  } else {
+    LW = 13; VWD = 10; GW = colw - 3 - LW - VWD - 2 - 2 - 13; if (GW > 30) GW = 30
+  }
+  if (GW < 5) GW = 0
+}
+
+function ptitle(t, w) { return paint(BOLD CYN, G_H " " t " ") paint(DIM, rep(G_H, w - length(t) - 3)) }
+
+function panel(p, title) { cp = p; PN[p] = 1; P[p, 1] = ptitle(title, PW) }
+function pl(s) { PN[cp]++; P[cp, PN[cp]] = s }
+
+function emit(s) { NO++; OUT[NO] = s }
+
+function addAlert(level, text) { NAL++; AL[NAL] = text; ALV[NAL] = level; if (level > status) status = level }
+
+# ---------- Raw view (the classic table) ----------
 
 function addRow(name, val, extra, expl, color) {
   nrows++
@@ -147,21 +266,316 @@ function addHeader(title) { nrows++; rkind[nrows] = "hdr"; rname[nrows] = title 
 
 function addLine(text, color) { nrows++; rkind[nrows] = "line"; rname[nrows] = text; rcolor[nrows] = color }
 
-function rule(title, width,    left, right, s, i) {
+function rule(title, width,    left, right) {
   title = " " title " "
   left = int((width - length(title)) / 2)
   right = width - length(title) - left
-  s = ""
-  for (i = 0; i < left; i++) s = s "-"
-  s = s title
-  for (i = 0; i < right; i++) s = s "-"
-  return s
+  return rep("-", left) title rep("-", right)
+}
+
+function renderRaw(    i, name, label, extra, color, width, line) {
+  w1 = 15; w2 = 10; w3 = 6; w4 = 25
+
+  addHeader("MySQL Runtime Metrics")
+  if (!up) {
+    addLine("Unable to read MySQL status. Retrying every refresh...", RED)
+    if (err != "") addLine(err, RED)
+  } else {
+    addRow("Variable", "Total", "Now/s", "Description", "")
+
+    for (i = 1; i <= nm; i++) {
+      name = metrics[i]
+      if (!(name in cur)) continue
+
+      if (name == "Uptime") {
+        addSpanRow("Uptime (Wait 24h for accuracy)", prettyTime(cur[name]))
+        continue
+      }
+
+      label = name
+      if (name == "Questions") label = sprintf("Questions (%.2f avg QPS)", avg_qps)
+
+      extra = (name in gauge) ? "" : formatRate(rate(name))
+      color = (name == "Innodb_buffer_pool_pages_free" && cur[name] == 0) ? RED : ""
+      addRow(label, formatNumber(cur[name]), extra, desc[name], color)
+    }
+
+    addHeader("MySQL Health Metrics")
+    addRow("Metric", "Boot avg", "Now", "", "")
+
+    if (bp_size > 0)
+      addRow("InnoDB Buffer Pool Size", formatBytes(bp_size), "", "Set by innodb_buffer_pool_size.", "")
+
+    if ("Innodb_buffer_pool_pages_free" in cur)
+      addRow("InnoDB Buffer Pool Free",
+             formatBytes(bp_free) ((bp_free_pct != "") ? sprintf(" (%.0f%%)", bp_free_pct) : ""), "",
+             "Zero/low? = innodb_buffer_pool_size.", (cur["Innodb_buffer_pool_pages_free"] == 0) ? RED : "")
+
+    if (hit_boot != "")
+      addRow("InnoDB Buffer Pool Hit Ratio", pct2(hit_boot), pct2(hit_now), "High QPS? Aim for high hit ratio.", "")
+    if (tc_boot != "")
+      addRow("Thread Cache Hit Ratio", pct(tc_boot), pct(tc_now), "Faster connection handling. > 90%.", "")
+    if (tbl_boot != "")
+      addRow("Table Cache Hit Ratio", pct(tbl_boot), pct(tbl_now), "Faster table access speeds. > 90%.", "")
+    if (tmp_boot != "")
+      addRow("Temp tables created on disk", pct(tmp_boot), pct(tmp_now), "Keep this low! Disk I/O is slow.", "")
+    if (maxc > 0)
+      addRow("Connection Usage (peak / now)", pct(peak_pct), pct(conn_pct),
+             sprintf("Of max_connections (%d). < 85%%.", maxc), "")
+  }
+
+  addHeader("System")
+  if (mem_total > 0) {
+    line = sprintf("Memory: Total %.2f GB, Used %.2f GB, Free %.2f GB, Available %.2f GB",
+                   mem_total / 1073741824, (mem_total - mem_avail) / 1073741824,
+                   mem["MemFree"] / 1073741824, mem_avail / 1073741824)
+    if (mem_avail_pct < 10) addLine(line sprintf(" (Warning!: %.1f%%)", mem_avail_pct), RED)
+    else addLine(line, "")
+  }
+  addLine("CPU: " ((cpu_pct != "") ? pct(cpu_pct) : "-") ((load != "") ? "   Load: " load : ""), "")
+
+  width = w1 + w2 + w3 + w4 + 9
+  for (i = 1; i <= nrows; i++) {
+    if (rkind[i] == "hdr") {
+      emit(rule(rname[i], width))
+    } else if (rkind[i] == "line") {
+      emit(paint(rcolor[i], rname[i]))
+    } else if (rkind[i] == "span") {
+      emit(sprintf("%-" w1 "s | %s", rname[i], rval[i]))
+    } else {
+      emit(paint(rcolor[i], sprintf("%-" w1 "s | %-" w2 "s | %-" w3 "s | %s", rname[i], rval[i], rextra[i], rdesc[i])))
+    }
+  }
+  emit(rule(title, width))
+}
+
+# ---------- Dashboard ----------
+
+function header(w,    left, right, parts, n, i, st) {
+  st = (!up) ? "DOWN" : (status == 3) ? "CRITICAL" : (status == 2) ? nwarn " WARN" : "OK"
+  right = paint(levelColor(up ? worse(status, 1) : 3), G_DOT " " st) "   " interval "s   " clock " "
+  n = 0
+  parts[++n] = paint(BOLD, " MySQL Monitor")
+  if (host != "")   parts[++n] = host
+  if (server != "") parts[++n] = server
+  if (up)           parts[++n] = "up " shortTime(cur["Uptime"])
+  # Drop the least important parts until it fits
+  while (n > 1) {
+    left = parts[1]
+    for (i = 2; i <= n; i++) left = left " " paint(DIM, G_SEP) " " parts[i]
+    if (vw(left) + vw(right) + 3 <= w) break
+    n--
+  }
+  if (n == 1) left = parts[1]
+  return left rep(" ", w - vw(left) - vw(right)) right
+}
+
+function keybar(    k) {
+  k = " " paint(INV, " q ") " Quit  "
+  k = k paint(INV, " r ") ((view == "raw") ? " Dashboard" : " Raw counters")
+  return k
+}
+
+function buildPanels(    p) {
+  NP = 0
+  if (!up) {
+    ORDER[++NP] = "err"; panel("err", "MYSQL")
+    pl(L(3, "Status", "DOWN", "", "retrying every refresh", ""))
+    if (err != "") pl("   " paint(RED, clip(err, PW - 3)))
+  } else {
+    ORDER[++NP] = "thr"; panel("thr", "THROUGHPUT")
+    pl(L(0, "Queries/s", formatRate(r_q), spark("qps", GW, 1), "avg " formatRate(avg_qps), "Client requests per second."))
+    pl(R(high(r_slow, 1, 10), "Slow/s", "Slow_queries", spark("slow", GW, 1), "Queries exceeding long_query_time."))
+    pl(R(0, "Sel scan/s", "Select_scan", spark("scan", GW, 1), "Full table scans in SELECT queries."))
+    pl(R(high(r_fj, 1, 10), "Full join/s", "Select_full_join", "", "Joins without usable indexes."))
+    pd(L(0, "Questions", formatNumber(cur["Questions"]), "", "since boot", "Total number of client requests."))
+    pd(L(0, "Uptime", "", "", prettyTime(cur["Uptime"]), "Wait 24h for accuracy."))
+
+    ORDER[++NP] = "con"; panel("con", "CONNECTIONS")
+    pl(L(high(conn_pct, 85, 95), "Connected", cur["Threads_connected"] ((maxc > 0) ? "/" maxc : ""),
+         bar(conn_pct, GW, 85, 95), pct(conn_pct), "Currently open connections."))
+    pl(L(0, "Running", cur["Threads_running"], spark("running", GW, ncpu), (ncpu > 0) ? ncpu " cores" : "",
+         "Threads currently running queries."))
+    pl(L(high(peak_pct, 85, 95), "Peak", cur["Max_used_connections"] ((maxc > 0) ? "/" maxc : ""),
+         bar(peak_pct, GW, 85, 95), pct(peak_pct), "Max concurrent connections so far."))
+    pl(L(high(r_abort, 1, 10), "Aborted/s", formatRate(r_abort), "", "clients + connects", "Failed connections per second."))
+    pl(L((r_conn >= 1) ? low(tc_now, 90, 50) : 0, "Thread cache", pct((tc_now != "") ? tc_now : tc_boot), "",
+         (tc_now != "") ? "boot " pct(tc_boot) : "since boot", "Faster connection handling. > 90%."))
+    pd(R(0, "Connections/s", "Connections", "", "Total connection attempts."))
+    pd(R(0, "Created/s", "Threads_created", "", "Threads created for connections."))
+    pd(L(0, "Cached", cur["Threads_cached"], "", "", "Threads in the thread cache."))
+    pd(L(0, "Aborted cli", formatNumber(cur["Aborted_clients"]), "", "since boot", "Failed client connections."))
+    pd(L(0, "Aborted conn", formatNumber(cur["Aborted_connects"]), "", "since boot", "Failed MySQL server connections."))
+
+    ORDER[++NP] = "bp"; panel("bp", "INNODB BUFFER POOL")
+    pl(L(0, "Size", (bp_size > 0) ? formatBytes(bp_size) : "-", bar(bp_used_pct, GW, 101, 101), pct(bp_used_pct) " used",
+         "Set by innodb_buffer_pool_size."))
+    pl(L((cur["Innodb_buffer_pool_pages_free"] == 0) ? 2 : 0, "Free", formatBytes(bp_free), "",
+         (bp_free_pct != "") ? pct(bp_free_pct) " of pool" : "", "Zero/low? = innodb_buffer_pool_size."))
+    pl(L(low(hit_now, 99, 95), "Hit ratio", pct2((hit_now != "") ? hit_now : hit_boot), "",
+         (hit_now != "") ? "boot " pct2(hit_boot) : "since boot", "High QPS? Aim for high hit ratio."))
+    pl(R(0, "Disk reads/s", "Innodb_buffer_pool_reads", spark("bpr", GW, 1), "Reads that missed the pool (disk)."))
+    pl(L(high(r_wait, 0.001, 1), "Wait free/s", formatRate(r_wait), "", "log waits/s " formatRate(r_logw),
+         "Waits for free pages. Should be 0."))
+    pd(R(0, "Read req/s", "Innodb_buffer_pool_read_requests", "", "Logical read requests to buffer."))
+    pd(R(0, "Write req/s", "Innodb_buffer_pool_write_requests", "", "Writes requested to InnoDB buffer."))
+    pd(R(0, "Data reads/s", "Innodb_data_reads", "", "Data pages read from disk."))
+    pd(R(0, "Data writes/s", "Innodb_data_writes", "", "Data pages written to disk."))
+    pd(R(0, "Log writes/s", "Innodb_log_writes", "", "Log writes to InnoDB log file."))
+
+    ORDER[++NP] = "tmp"; panel("tmp", "TEMP TABLES & SORTS")
+    pl(R(0, "Tmp tables/s", "Created_tmp_tables", spark("tmp", GW, 1), "Temp tables created in memory."))
+    pl(L((r_tmp >= 1) ? high(tmp_now, 25, 50) : 0, "On disk", pct((tmp_now != "") ? tmp_now : tmp_boot), "",
+         (tmp_now != "") ? "boot " pct(tmp_boot) : "since boot", "Keep this low! Disk I/O is slow."))
+    pl(R(0, "Tmp files/s", "Created_tmp_files", "", "Temp files created by MySQL."))
+    pl(R(high(r_smp, 1, 10), "Sort merge/s", "Sort_merge_passes", "", "Merge passes performed for sorting."))
+    pl(R(0, "Sort rows/s", "Sort_rows", "", "Rows sorted by MySQL."))
+    pd(R(0, "Disk tmp/s", "Created_tmp_disk_tables", "", "Temp tables created on disk."))
+    pd(R(0, "Sort range/s", "Sort_range", "", "Range-based sort operations."))
+    pd(R(0, "Sort scan/s", "Sort_scan", "", "Table-scan-based sort operations."))
+
+    ORDER[++NP] = "tbl"; panel("tbl", "TABLES & LOCKS")
+    pl(L((toc > 0 && cur["Open_tables"] >= toc && r_opened >= 1) ? 2 : 0, "Open tables",
+         cur["Open_tables"] ((toc > 0) ? "/" toc : ""), bar(ot_pct, GW, 95, 101), pct(ot_pct), "Tables currently open."))
+    pl(R(high(r_opened, 1, 10), "Opened/s", "Opened_tables", spark("opened", GW, 1), "Tables opened (table cache misses)."))
+    pl(L(low(tbl_now, 90, 50), "Cache hit", pct((tbl_now != "") ? tbl_now : tbl_boot), "",
+         (tbl_now != "") ? "boot " pct(tbl_boot) : "since boot", "Faster table access speeds. > 90%."))
+    pl(R(high(r_lockw, 0.001, 1), "Lock waits/s", "Table_locks_waited", "", "Locks that had to wait. (bad)."))
+    pl(L(0, "Open files", cur["Open_files"], "", "", "Files currently open by MySQL."))
+    pd(R(0, "Cache hits/s", "Table_open_cache_hits", "", "Cache hits for table open."))
+    pd(R(0, "Cache miss/s", "Table_open_cache_misses", "", "Cache misses for table open."))
+    pd(R(0, "Locks imm/s", "Table_locks_immediate", "", "Locks acquired immediately."))
+    pd(R(0, "Key reads/s", "Key_reads", "", "MyISAM disk reads (Use InnoDB)."))
+    pd(R(0, "Key writes/s", "Key_writes", "", "MyISAM disk writes (Use InnoDB)."))
+  }
+
+  ORDER[++NP] = "sys"; panel("sys", "SYSTEM")
+  pl(L(high(cpu_pct, 80, 95), "CPU", pct(cpu_pct), bar(cpu_pct, GW, 80, 95), (load != "") ? "load " load1 : "",
+       "Whole-system CPU usage."))
+  if (mem_total > 0)
+    pl(L(high(mem_used_pct, 90, 95), "Memory", pct(mem_used_pct), bar(mem_used_pct, GW, 90, 95),
+         formatBytes(mem_avail) " avail", "System RAM in use (" formatBytes(mem_total) " total)."))
+  if (swap_total > 0)
+    pl(L(high(swap_pct, 20, 50), "Swap", pct(swap_pct), bar(swap_pct, GW, 20, 50), formatBytes(swap_used) " used",
+         "Keep near zero for MySQL."))
+  else
+    pl(L(0, "Swap", "none", "", "", ""))
+  if (load != "") pl(L(0, "Load avg", "", "", load, "1, 5 and 15 minute averages."))
+}
+
+# Alerts, worst first, clipped to w columns. budget = lines available; an overflow line replaces the last one.
+function emitAlerts(budget, w,    lvl, i, shown) {
+  if (NAL == 0) { emit(" " mark(1) " " paint(DIM, "No issues detected")); return }
+  shown = 0
+  for (lvl = 3; lvl >= 2; lvl--)
+    for (i = 1; i <= NAL; i++) {
+      if (ALV[i] != lvl) continue
+      if (shown == budget - 1 && NAL > budget) {
+        emit("   " paint(DIM, "+" (NAL - shown) " more"))
+        return
+      }
+      emit(" " mark(lvl) " " clip(AL[i], w - 3))
+      shown++
+    }
+}
+
+# Panels in n columns of width colw, filled left to right, top to bottom.
+function layoutGrid(n, colw, budget,    w, i, j, k, h, line, seg) {
+  NO = 0
+  PW = colw; setWidths(colw, 0); buildPanels()
+  w = n * colw + 2 * (n - 1)
+  emit(header(w))
+  if (n > 1) emit("")
+  for (i = 1; i <= NP; i += n) {
+    h = 0
+    for (k = i; k < i + n && k <= NP; k++) if (PN[ORDER[k]] > h) h = PN[ORDER[k]]
+    for (j = 1; j <= h; j++) {
+      line = ""
+      for (k = i; k < i + n && k <= NP; k++) {
+        seg = (j <= PN[ORDER[k]]) ? P[ORDER[k], j] : ""
+        line = (k == i) ? seg : padR(line, (k - i) * (colw + 2)) seg
+      }
+      emit(line)
+    }
+    if (n > 1) emit("")
+  }
+  emit(ptitle("ALERTS", w)); emitAlerts(budget, w)
+  if (n > 1) emit("")
+  emit(keybar())
+}
+
+function layoutCompact(budget,    colw, sep) {
+  NO = 0
+  colw = int((cols - 4) / 2); if (colw > 44) colw = 44
+  setWidths(colw, 1)
+  sep = " " paint(DIM, G_V) " "
+  emit(header(2 * colw + 3))
+  if (up) {
+    emit(padR(L(0, "QPS", formatRate(r_q), spark("qps", GW, 1), ""), colw) sep \
+         L(high(conn_pct, 85, 95), "Conn", cur["Threads_connected"] ((maxc > 0) ? "/" maxc : ""), bar(conn_pct, GW, 85, 95), (GW > 0) ? pct(conn_pct) : ""))
+    emit(padR(L(high(r_slow, 1, 10), "Slow/s", formatRate(r_slow), spark("slow", GW, 1), ""), colw) sep \
+         L(0, "Running", cur["Threads_running"], spark("running", GW, ncpu), ""))
+    emit(padR(L(low(hit_now, 99, 95), "BP hit", pct2((hit_now != "") ? hit_now : hit_boot), "", ""), colw) sep \
+         L(high(mem_used_pct, 90, 95), "Memory", pct(mem_used_pct), bar(mem_used_pct, GW, 90, 95), ""))
+    emit(padR(L((r_tmp >= 1) ? high(tmp_now, 25, 50) : 0, "Tmp disk", pct((tmp_now != "") ? tmp_now : tmp_boot), "", ""), colw) sep \
+         L(high(cpu_pct, 80, 95), "CPU", pct(cpu_pct), bar(cpu_pct, GW, 80, 95), ""))
+  } else {
+    emit(L(3, "MySQL", "DOWN", "", clip(err, 2 * colw - 20)))
+  }
+  emitAlerts(budget, 2 * colw + 3)
+  emit(keybar())
+}
+
+# Layouts stay at least one column narrower than the terminal: with wrapping off, the
+# erase-to-end-of-line after each line would wipe a character in the last column.
+
+# Lays out with one alert line to measure the height; if it fits, rebuilds giving the
+# spare rows to the alerts list. layout: 0 = compact, otherwise the number of columns.
+function fit(layout, colw,    budget) {
+  if (layout) layoutGrid(layout, colw, 1); else layoutCompact(1)
+  if (NO > rows) return 0
+  budget = rows - NO + 1
+  if (budget > 8) budget = 8
+  if (budget > 1) { if (layout) layoutGrid(layout, colw, budget); else layoutCompact(budget) }
+  return 1
+}
+
+# Picks the layout that shows the most and still fits: descriptions and detail lines first,
+# then detail only, descriptions only, the core lines, and finally the compact summary.
+function layoutBest(    c, cand, cf, minw, maxw, n, colw) {
+  split("1 1,0 1,1 0,0 0", cand, ",")
+  for (c = 1; c <= 4; c++) {
+    split(cand[c], cf, " "); SHOW_DESC = cf[1] + 0; SHOW_DETAIL = cf[2] + 0
+    minw = SHOW_DESC ? 98 : 48
+    n = int((cols + 1) / (minw + 2)); if (n > 3) n = 3
+    if (n < 1) continue
+    colw = int((cols - 1 - 2 * (n - 1)) / n)
+    maxw = SHOW_DESC ? 120 : (n == 1) ? 80 : 64
+    if (colw > maxw) colw = maxw
+    if (fit(n, colw)) return
+  }
+  SHOW_DESC = 0; SHOW_DETAIL = 0
+  fit(0, 0)
 }
 
 BEGIN {
-  RED = "\033[0;31m"; RESET = "\033[0m"
+  HIST_MAX = 60
 
-  # Display order, and which metrics are point-in-time gauges (no per-second rate)
+  if (color) {
+    RED = "\033[31m"; GRN = "\033[32m"; YEL = "\033[33m"; CYN = "\033[36m"
+    DIM = "\033[2m"; BOLD = "\033[1m"; ITAL = "\033[3m"; INV = "\033[7m"; RST = "\033[0m"
+  }
+  if (unicode) {
+    G_FULL = "█"; G_EMPTY = "░"; G_OK = "✓"; G_WARN = "⚠"; G_CRIT = "✗"
+    G_DOT = "●"; G_SEP = "▸"; G_H = "─"; G_V = "│"; G_ELL = "…"
+    split("▁ ▂ ▃ ▄ ▅ ▆ ▇ █", SPK, " ")
+  } else {
+    G_FULL = "#"; G_EMPTY = "."; G_OK = "+"; G_WARN = "!"; G_CRIT = "x"
+    G_DOT = "*"; G_SEP = ">"; G_H = "-"; G_V = "|"; G_ELL = "~"
+    split("_ . - - = + * #", SPK, " ")
+  }
+
+  # Display order of the raw view, and which metrics are point-in-time gauges (no rate)
   nm = split("Aborted_clients Aborted_connects Connections Created_tmp_disk_tables " \
              "Created_tmp_files Created_tmp_tables Innodb_buffer_pool_pages_free " \
              "Innodb_buffer_pool_read_requests Innodb_buffer_pool_reads " \
@@ -179,7 +593,7 @@ BEGIN {
         "Threads_cached Threads_connected Threads_running Uptime", g, " ")
   for (i in g) gauge[g[i]] = 1
 
-  split("innodb_buffer_pool_size innodb_page_size max_connections table_open_cache", v, " ")
+  split("innodb_buffer_pool_size innodb_page_size max_connections table_open_cache hostname version", v, " ")
   for (i in v) wanted_var[v[i]] = 1
 
   desc["Aborted_clients"]                  = "Failed client connections."
@@ -226,7 +640,11 @@ BEGIN {
 
 /^@@[A-Z]+/ { section = substr($1, 3); if (section == "TIME") now = $2; next }
 
-section == "PREV" { prev[$1] = $2 + 0; next }
+section == "PREV" {
+  if ($1 ~ /^H_/) hist[substr($1, 3)] = $2
+  else if ($1 != "") prev[$1] = $2 + 0
+  next
+}
 
 section == "CUR" {
   if ($0 ~ /^\|/) {
@@ -234,7 +652,7 @@ section == "CUR" {
     name = trim(f[2]); val = trim(f[3])
     if (name == "Variable_name") { tables++; next }
     if (tables == 1 && (name in wanted)) cur[name] = val + 0
-    else if (tables == 2 && (name in wanted_var)) vars[name] = val + 0
+    else if (tables == 2 && (name in wanted_var)) { vars[name] = val + 0; svars[name] = val }
   } else if ($0 !~ /^\+/ && $0 != "") {
     err = (err == "") ? $0 : err " " $0
   }
@@ -244,163 +662,174 @@ section == "CUR" {
 section == "MEMINFO" { sub(/:$/, "", $1); mem[$1] = $2 * 1024; next }
 
 section == "CPU" {
+  if ($1 != "cpu") { if ($1 ~ /^cpu[0-9]/) ncpu++; next }
   cpu_total = 0
   for (i = 2; i <= 9 && i <= NF; i++) cpu_total += $i
   cpu_idle = $5 + $6
   next
 }
 
-section == "LOAD" { load = $1 " " $2 " " $3; next }
+section == "LOAD" { load = $1 " " $2 " " $3; load1 = $1; next }
 
 END {
-  have_prev = ("T" in prev) && ("Uptime" in prev) && ("Uptime" in cur) && cur["Uptime"] >= prev["Uptime"]
+  up = ("Uptime" in cur)
+  have_prev = ("T" in prev) && ("Uptime" in prev) && up && cur["Uptime"] >= prev["Uptime"]
   elapsed = have_prev ? (now - prev["T"]) / 1000000 : 0
   if (elapsed <= 0) have_prev = 0
 
-  w1 = 15; w2 = 10; w3 = 6; w4 = 25
+  # ---------- Derived metrics ----------
+  host = svars["hostname"]
+  server = svars["version"]
+  if (server != "") {
+    sub(/-.*/, "", server)
+    server = ((svars["version"] ~ /MariaDB/) ? "MariaDB " : "MySQL ") server
+  }
 
-  if (!("Uptime" in cur)) {
-    addHeader("MySQL Runtime Metrics")
-    addLine("Unable to read MySQL status. Retrying every refresh...", RED)
-    if (err != "") addLine(err, RED)
+  avg_qps = (cur["Uptime"] > 0) ? cur["Questions"] / cur["Uptime"] : ""
+  r_q = rate("Questions"); r_slow = rate("Slow_queries"); r_scan = rate("Select_scan")
+  r_fj = rate("Select_full_join"); r_conn = rate("Connections")
+  r_abort = (rate("Aborted_clients") != "" && rate("Aborted_connects") != "") ? rate("Aborted_clients") + rate("Aborted_connects") : ""
+  r_bpr = rate("Innodb_buffer_pool_reads"); r_wait = rate("Innodb_buffer_pool_wait_free")
+  r_logw = rate("Innodb_log_waits"); r_tmp = rate("Created_tmp_tables"); r_tmpf = rate("Created_tmp_files")
+  r_smp = rate("Sort_merge_passes"); r_sortrows = rate("Sort_rows")
+  r_opened = rate("Opened_tables"); r_lockw = rate("Table_locks_waited")
+
+  hit_boot = ""; hit_now = ""
+  if (cur["Innodb_buffer_pool_read_requests"] > 0) {
+    hit_boot = 100 * (1 - cur["Innodb_buffer_pool_reads"] / cur["Innodb_buffer_pool_read_requests"])
+    if (hit_boot < 0) hit_boot = 0
+  }
+  if (have_prev && delta("Innodb_buffer_pool_read_requests") > 0) {
+    hit_now = 100 * (1 - delta("Innodb_buffer_pool_reads") / delta("Innodb_buffer_pool_read_requests"))
+    if (hit_now < 0) hit_now = 0
+  }
+
+  tc_boot = ""; tc_now = ""
+  if (cur["Connections"] > 0) tc_boot = 100 * (1 - cur["Threads_created"] / cur["Connections"])
+  if (have_prev && delta("Connections") > 0) tc_now = 100 * (1 - delta("Threads_created") / delta("Connections"))
+
+  tbl_boot = ""; tbl_now = ""
+  total = cur["Table_open_cache_hits"] + cur["Table_open_cache_misses"]
+  if (total > 0) tbl_boot = 100 * cur["Table_open_cache_hits"] / total
+  if (have_prev) {
+    total = delta("Table_open_cache_hits") + delta("Table_open_cache_misses")
+    if (total > 0) tbl_now = 100 * delta("Table_open_cache_hits") / total
+  }
+
+  tmp_boot = ""; tmp_now = ""
+  if (cur["Created_tmp_tables"] > 0) tmp_boot = 100 * cur["Created_tmp_disk_tables"] / cur["Created_tmp_tables"]
+  if (have_prev && delta("Created_tmp_tables") > 0) tmp_now = 100 * delta("Created_tmp_disk_tables") / delta("Created_tmp_tables")
+
+  maxc = vars["max_connections"]
+  conn_pct = (maxc > 0) ? 100 * cur["Threads_connected"] / maxc : ""
+  peak_pct = (maxc > 0) ? 100 * cur["Max_used_connections"] / maxc : ""
+  toc = vars["table_open_cache"]
+  ot_pct = (toc > 0) ? 100 * cur["Open_tables"] / toc : ""
+
+  page_size = (vars["innodb_page_size"] > 0) ? vars["innodb_page_size"] : 16384
+  bp_size = vars["innodb_buffer_pool_size"]
+  bp_free = cur["Innodb_buffer_pool_pages_free"] * page_size
+  bp_free_pct = (cur["Innodb_buffer_pool_pages_total"] > 0) ? 100 * cur["Innodb_buffer_pool_pages_free"] / cur["Innodb_buffer_pool_pages_total"] : ""
+  bp_used_pct = (bp_free_pct != "") ? 100 - bp_free_pct : ""
+
+  mem_total = mem["MemTotal"]
+  mem_avail = ("MemAvailable" in mem) ? mem["MemAvailable"] : mem["MemFree"]
+  mem_avail_pct = (mem_total > 0) ? 100 * mem_avail / mem_total : ""
+  mem_used_pct = (mem_total > 0) ? 100 - mem_avail_pct : ""
+  swap_total = mem["SwapTotal"]; swap_used = swap_total - mem["SwapFree"]
+  swap_pct = (swap_total > 0) ? 100 * swap_used / swap_total : ""
+  cpu_pct = (("cpu_total" in prev) && cpu_total > prev["cpu_total"]) ? \
+            100 * (1 - (cpu_idle - prev["cpu_idle"]) / (cpu_total - prev["cpu_total"])) : ""
+
+  if (up) {
+    pushHist("qps", r_q); pushHist("slow", r_slow); pushHist("scan", r_scan)
+    pushHist("bpr", r_bpr); pushHist("tmp", r_tmp); pushHist("opened", r_opened)
+    pushHist("running", cur["Threads_running"])
+  }
+
+  # ---------- Alerts ----------
+  status = 1; NAL = 0
+  if (!up) {
+    addAlert(3, "Cannot read MySQL status. Retrying every refresh.")
   } else {
-    addHeader("MySQL Runtime Metrics")
-    addRow("Variable", "Total", "Now/s", "Description", "")
-
-    for (i = 1; i <= nm; i++) {
-      name = metrics[i]
-      if (!(name in cur)) continue
-
-      if (name == "Uptime") {
-        addSpanRow("Uptime (Wait 24h for accuracy)", prettyTime(cur[name]))
-        continue
-      }
-
-      label = name
-      if (name == "Questions" && cur["Uptime"] > 0)
-        label = sprintf("Questions (%.2f avg QPS)", cur["Questions"] / cur["Uptime"])
-
-      extra = (name in gauge) ? "" : formatRate(rate(name))
-      color = (name == "Innodb_buffer_pool_pages_free" && cur[name] == 0) ? RED : ""
-      addRow(label, formatNumber(cur[name]), extra, desc[name], color)
-    }
-
-    addHeader("MySQL Health Metrics")
-    addRow("Metric", "Boot avg", "Now", "", "")
-
-    page_size = ("innodb_page_size" in vars && vars["innodb_page_size"] > 0) ? vars["innodb_page_size"] : 16384
-
-    if ("innodb_buffer_pool_size" in vars)
-      addRow("InnoDB Buffer Pool Size", formatBytes(vars["innodb_buffer_pool_size"]), "",
-             "Set by innodb_buffer_pool_size.", "")
-
-    if ("Innodb_buffer_pool_pages_free" in cur) {
-      free_val = formatBytes(cur["Innodb_buffer_pool_pages_free"] * page_size)
-      if (cur["Innodb_buffer_pool_pages_total"] > 0)
-        free_val = free_val sprintf(" (%.0f%%)", 100 * cur["Innodb_buffer_pool_pages_free"] / cur["Innodb_buffer_pool_pages_total"])
-      addRow("InnoDB Buffer Pool Free", free_val, "", "Zero/low? = innodb_buffer_pool_size.",
-             (cur["Innodb_buffer_pool_pages_free"] == 0) ? RED : "")
-    }
-
-    boot = ""; now_r = ""
-    if (cur["Innodb_buffer_pool_read_requests"] > 0) {
-      boot = 100 * (1 - cur["Innodb_buffer_pool_reads"] / cur["Innodb_buffer_pool_read_requests"])
-      if (boot < 0) boot = 0
-    }
-    if (have_prev && delta("Innodb_buffer_pool_read_requests") > 0) {
-      now_r = 100 * (1 - delta("Innodb_buffer_pool_reads") / delta("Innodb_buffer_pool_read_requests"))
-      if (now_r < 0) now_r = 0
-    }
-    if (boot != "")
-      addRow("InnoDB Buffer Pool Hit Ratio", pct2(boot), pct2(now_r), "High QPS? Aim for high hit ratio.", "")
-
-    boot = ""; now_r = ""
-    if (cur["Connections"] > 0) boot = 100 * (1 - cur["Threads_created"] / cur["Connections"])
-    if (have_prev && delta("Connections") > 0) now_r = 100 * (1 - delta("Threads_created") / delta("Connections"))
-    if (boot != "")
-      addRow("Thread Cache Hit Ratio", pct(boot), pct(now_r), "Faster connection handling. > 90%.", "")
-
-    boot = ""; now_r = ""
-    total = cur["Table_open_cache_hits"] + cur["Table_open_cache_misses"]
-    if (total > 0) boot = 100 * cur["Table_open_cache_hits"] / total
-    if (have_prev) {
-      total = delta("Table_open_cache_hits") + delta("Table_open_cache_misses")
-      if (total > 0) now_r = 100 * delta("Table_open_cache_hits") / total
-    }
-    if (boot != "")
-      addRow("Table Cache Hit Ratio", pct(boot), pct(now_r), "Faster table access speeds. > 90%.", "")
-
-    boot = ""; now_r = ""
-    if (cur["Created_tmp_tables"] > 0) boot = 100 * cur["Created_tmp_disk_tables"] / cur["Created_tmp_tables"]
-    if (have_prev && delta("Created_tmp_tables") > 0) now_r = 100 * delta("Created_tmp_disk_tables") / delta("Created_tmp_tables")
-    if (boot != "")
-      addRow("Temp tables created on disk", pct(boot), pct(now_r), "Keep this low! Disk I/O is slow.", "")
-
-    if (vars["max_connections"] > 0)
-      addRow("Connection Usage (peak / now)", pct(100 * cur["Max_used_connections"] / vars["max_connections"]),
-             pct(100 * cur["Threads_connected"] / vars["max_connections"]),
-             sprintf("Of max_connections (%d). < 85%%.", vars["max_connections"]), "")
+    if (hit_now != "" && hit_now < 99)
+      addAlert(low(hit_now, 99, 95), sprintf("Buffer pool hit ratio %.2f%%: reads are going to disk. Consider a larger innodb_buffer_pool_size.", hit_now))
+    if (r_wait > 0)
+      addAlert(3, "Queries are waiting for free buffer pool pages. innodb_buffer_pool_size is too small.")
+    else if (bp_free_pct != "" && cur["Innodb_buffer_pool_pages_free"] == 0)
+      addAlert(2, "Buffer pool has no free pages. Consider raising innodb_buffer_pool_size.")
+    if (r_logw > 0)
+      addAlert(2, sprintf("InnoDB log waits %s/s. Consider raising innodb_log_buffer_size.", formatRate(r_logw)))
+    if (conn_pct != "" && conn_pct >= 85)
+      addAlert(high(conn_pct, 85, 95), sprintf("%d of %d connections in use (%.0f%%).", cur["Threads_connected"], maxc, conn_pct))
+    else if (peak_pct != "" && peak_pct >= 85)
+      addAlert(2, sprintf("Connections peaked at %.0f%% of max_connections (%d).", peak_pct, maxc))
+    if (r_conn >= 1 && tc_now != "" && tc_now < 90)
+      addAlert(2, sprintf("Thread cache hit ratio %.1f%%. Consider raising thread_cache_size.", tc_now))
+    if (toc > 0 && cur["Open_tables"] >= toc && r_opened >= 1)
+      addAlert(2, sprintf("table_open_cache (%d) is full and tables are reopened %s/s. Consider raising it.", toc, formatRate(r_opened)))
+    else if (tbl_now != "" && tbl_now < 90)
+      addAlert(2, sprintf("Table cache hit ratio %.1f%%. Consider raising table_open_cache.", tbl_now))
+    if (r_tmp >= 1 && tmp_now != "" && tmp_now >= 25)
+      addAlert(high(tmp_now, 25, 50), sprintf("%.0f%% of temp tables go to disk. Check tmp_table_size / max_heap_table_size and query plans.", tmp_now))
+    if (r_slow >= 1)
+      addAlert(high(r_slow, 1, 10), sprintf("%s slow queries/s. Check the slow query log.", formatRate(r_slow)))
+    if (r_fj >= 1)
+      addAlert(2, sprintf("%s joins/s without usable indexes (Select_full_join).", formatRate(r_fj)))
+    if (r_lockw > 0)
+      addAlert(2, sprintf("Table lock waits %s/s. MyISAM tables? Consider converting them to InnoDB.", formatRate(r_lockw)))
+    if (r_smp >= 1)
+      addAlert(2, sprintf("Sort merge passes %s/s. Large sorts are spilling to disk.", formatRate(r_smp)))
+    if (r_abort >= 1)
+      addAlert(2, sprintf("Aborted connections %s/s: failed logins, timeouts or network issues.", formatRate(r_abort)))
   }
+  if (mem_avail_pct != "" && mem_avail_pct < 10)
+    addAlert(low(mem_avail_pct, 10, 5), sprintf("Only %.1f%% of system memory available (%s).", mem_avail_pct, formatBytes(mem_avail)))
+  if (swap_pct != "" && swap_pct >= 20)
+    addAlert(high(swap_pct, 20, 50), sprintf("%.0f%% of swap in use (%s). MySQL performs badly when swapped out.", swap_pct, formatBytes(swap_used)))
+  nwarn = 0
+  for (i = 1; i <= NAL; i++) if (ALV[i] == 2) nwarn++
 
-  addHeader("System")
-  if (mem["MemTotal"] > 0) {
-    gb = 1073741824
-    avail = ("MemAvailable" in mem) ? mem["MemAvailable"] : mem["MemFree"]
-    avail_pct = 100 * avail / mem["MemTotal"]
-    mem_line = sprintf("Memory: Total %.2f GB, Used %.2f GB, Free %.2f GB, Available %.2f GB",
-                       mem["MemTotal"] / gb, (mem["MemTotal"] - avail) / gb, mem["MemFree"] / gb, avail / gb)
-    if (avail_pct < 10) addLine(mem_line sprintf(" (Warning!: %.1f%%)", avail_pct), RED)
-    else addLine(mem_line, "")
-  }
-  cpu_line = "CPU: "
-  if (("cpu_total" in prev) && cpu_total > prev["cpu_total"])
-    cpu_line = cpu_line sprintf("%.1f%%", 100 * (1 - (cpu_idle - prev["cpu_idle"]) / (cpu_total - prev["cpu_total"])))
-  else
-    cpu_line = cpu_line "-"
-  if (load != "") cpu_line = cpu_line "   Load: " load
-  addLine(cpu_line, "")
-
-  width = w1 + w2 + w3 + w4 + 9
-  for (i = 1; i <= nrows; i++) {
-    if (rkind[i] == "hdr") {
-      print rule(rname[i], width)
-    } else if (rkind[i] == "line") {
-      print rcolor[i] rname[i] (rcolor[i] != "" ? RESET : "")
-    } else if (rkind[i] == "span") {
-      printf "%-" w1 "s | %s\n", rname[i], rval[i]
-    } else {
-      line = sprintf("%-" w1 "s | %-" w2 "s | %-" w3 "s | %s", rname[i], rval[i], rextra[i], rdesc[i])
-      print rcolor[i] line (rcolor[i] != "" ? RESET : "")
-    }
-  }
-  print rule(title, width)
+  # ---------- Output ----------
+  NO = 0
+  if (view == "raw") renderRaw()
+  else layoutBest()
+  for (i = 1; i <= NO; i++) print OUT[i]
 
   print "@@STATE"
   printf "T %.0f\n", now
   if (cpu_total > 0) printf "cpu_total %.0f\ncpu_idle %.0f\n", cpu_total, cpu_idle
   for (name in cur) printf "%s %.0f\n", name, cur[name]
+  for (name in hist) printf "H_%s %s\n", name, hist[name]
 }
 AWK
 
-# Collects every input the renderer needs in one stream; the only external command is mysqladmin.
-render_frame() {
-  local now line
-  now_us; now=$REPLY
-  local raw
-  raw=$(
-    printf '@@TIME %s\n@@PREV\n%s\n@@CUR\n' "$now" "$state"
+# Collects a new sample; the only external command is mysqladmin.
+fetch() {
+  local line
+  now_us; sample_time=$REPLY
+  printf -v clock '%(%H:%M:%S)T' -1
+  sample=$(
     mysqladmin extended-status variables 2>&1
     printf '@@MEMINFO\n'
     [[ -r /proc/meminfo ]] && printf '%s\n' "$(</proc/meminfo)"
     printf '@@CPU\n'
-    [[ -r /proc/stat ]] && { read -r line < /proc/stat; printf '%s\n' "$line"; }
+    if [[ -r /proc/stat ]]; then
+      while read -r line && [[ $line == cpu* ]]; do printf '%s\n' "$line"; done < /proc/stat
+    fi
     printf '@@LOAD\n'
     [[ -r /proc/loadavg ]] && printf '%s\n' "$(</proc/loadavg)"
   )
+}
+
+# Lays out the current sample for the current terminal size and view.
+render() {
   local out
-  out=$(awk -v title="$TITLE" "$RENDER_AWK" <<< "$raw")
+  out=$(LC_ALL=C awk -v title="$TITLE" -v rows="$rows" -v cols="$cols" -v view="$VIEW" \
+          -v interval="$INTERVAL" -v clock="$clock" -v unicode="$UNICODE" -v color="$COLOR" \
+          "$RENDER_AWK" <<< "@@TIME $sample_time"$'\n'"@@PREV"$'\n'"$prev_state"$'\n'"@@CUR"$'\n'"$sample")
   frame=${out%%$'\n'@@STATE*}
-  state=${out#*@@STATE$'\n'}
+  next_state=${out#*@@STATE$'\n'}
 }
 
 # Draws the cached frame in place: home the cursor, overwrite each line, clear what is left.
@@ -444,16 +873,21 @@ printf '\033[?25l\033[?7l\033[H\033[J'
 
 state=""
 resized=0
+VIEW=dashboard
 read_size
 
 # First refresh comes after 1 second so per-second rates appear quickly.
 first_wait=1
 
 while true; do
-  render_frame
+  fetch
+  prev_state=$state
+  render
+  state=$next_state
   draw
 
   # Wait for the next refresh in short slices so resizes redraw immediately.
+  # Resizes and view changes re-render the same sample instead of querying the server again.
   now_us
   deadline=$(( REPLY + ${first_wait:-$INTERVAL} * 1000000 ))
   first_wait=""
@@ -461,6 +895,7 @@ while true; do
     if (( resized )); then
       resized=0
       read_size
+      render
       draw
     fi
     now_us
@@ -469,7 +904,14 @@ while true; do
     (( remaining > 200000 )) && remaining=200000
     printf -v timeout '0.%06d' "$remaining"
     if read -t "$timeout" -n 1 -s -r key; then
-      [[ $key == "q" || $key == "Q" ]] && exit 0
+      case $key in
+        q|Q) exit 0 ;;
+        r|R)
+          [[ $VIEW == raw ]] && VIEW=dashboard || VIEW=raw
+          render
+          draw
+          ;;
+      esac
     fi
   done
 done
