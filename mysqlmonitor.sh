@@ -1076,7 +1076,8 @@ read_key() {
   local k c seq=""
   read -t "$1" -n 1 -s -r k || return 1
   if [[ $k == $'\e' ]]; then
-    while read -t 0.02 -n 1 -s -r c; do
+    # The rest of an arrow/page key follows the Esc; allow for SSH latency
+    while read -t 0.05 -n 1 -s -r c; do
       seq+=$c
       [[ $c == [A-Za-z~] && ${#seq} -gt 1 ]] && break
     done
@@ -1092,8 +1093,47 @@ read_key() {
   KEY=$k
 }
 
+# Applies KEY to the view. Returns 1 when it changes nothing.
+# SCROLL is -1 for the fitted dashboard, otherwise the first visible line; scroll keys
+# enter the full view (only when the fitted view hides something) and awk clamps the offset.
+apply_key() {
+  local page=$(( rows > 12 ? rows - 8 : 4 ))
+  case $KEY in
+    q|Q) exit 0 ;;
+    r|R) if [[ $VIEW == raw ]]; then VIEW=dashboard; SCROLL=-1; else VIEW=raw; SCROLL=0; fi ;;
+    down|j|pgdn|end)
+      if (( SCROLL < 0 )); then
+        (( MORE )) || return 1
+        SCROLL=0
+      fi
+      case $KEY in
+        down|j) (( SCROLL += 1 )) ;;
+        pgdn) (( SCROLL += page )) ;;
+        end) SCROLL=999999 ;;
+      esac
+      ;;
+    up|k|pgup)
+      (( SCROLL < 0 )) && return 1
+      # Going up from the top of the full view returns to the fitted dashboard
+      if (( SCROLL == 0 )); then
+        [[ $VIEW == dashboard ]] || return 1
+        SCROLL=-1
+      elif [[ $KEY == pgup ]]; then
+        (( SCROLL = SCROLL > page ? SCROLL - page : 0 ))
+      else
+        (( SCROLL -= 1 ))
+      fi
+      ;;
+    home) (( SCROLL > 0 )) || return 1; SCROLL=0 ;;
+    esc) [[ $VIEW == dashboard ]] && (( SCROLL >= 0 )) || return 1; SCROLL=-1 ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
 # Restore the terminal exactly once, whatever the exit path (q, Ctrl+C, TERM or error).
 cleanup() {
+  [[ -n $saved_stty ]] && stty "$saved_stty" 2>/dev/null
   printf '\033[?7h\033[?25h'
   tput rmcup 2>/dev/null || true
   echo "Exiting MySQL Monitor. Goodbye!"
@@ -1104,6 +1144,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'resized=1' WINCH
 
+# Keys pressed while a refresh is running must not be echoed onto the screen
+saved_stty=$(stty -g 2>/dev/null)
+stty -echo -icanon 2>/dev/null
 tput smcup 2>/dev/null || true
 # Hide the cursor, disable line wrapping and clear the screen once.
 printf '\033[?25l\033[?7l\033[H\033[J'
@@ -1143,23 +1186,14 @@ while true; do
     (( remaining > 200000 )) && remaining=200000
     printf -v timeout '0.%06d' "$remaining"
     if read_key "$timeout"; then
-      # SCROLL is -1 for the fitted dashboard, otherwise the first visible line.
-      # Scroll keys enter the full view; awk clamps the offset to the content.
-      page=$(( rows > 12 ? rows - 8 : 4 ))
-      case $KEY in
-        q|Q) exit 0 ;;
-        r|R) [[ $VIEW == raw ]] && { VIEW=dashboard; SCROLL=-1; } || { VIEW=raw; SCROLL=0; } ;;
-        down|j) (( SCROLL < 0 )) && { (( MORE )) || continue; SCROLL=0; } || (( SCROLL += 1 )) ;;
-        up|k) (( SCROLL > 0 )) && (( SCROLL -= 1 )) ;;
-        pgdn) (( SCROLL < 0 )) && { (( MORE )) || continue; SCROLL=0; } || (( SCROLL += page )) ;;
-        pgup) (( SCROLL = SCROLL > page ? SCROLL - page : (SCROLL < 0 ? -1 : 0) )) ;;
-        home) (( SCROLL >= 0 )) && SCROLL=0 ;;
-        end) (( SCROLL < 0 && ! MORE )) && continue; SCROLL=999999 ;;
-        esc) [[ $VIEW == dashboard ]] && SCROLL=-1 ;;
-        *) continue ;;
-      esac
-      render
-      draw
+      # Apply every key already waiting (e.g. a held arrow key), then redraw once
+      changed=0
+      apply_key && changed=1
+      while read_key 0.005; do apply_key && changed=1; done
+      if (( changed )); then
+        render
+        draw
+      fi
     fi
   done
 done
