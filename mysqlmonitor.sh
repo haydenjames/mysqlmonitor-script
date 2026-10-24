@@ -918,7 +918,7 @@ function selectTop(    k, i, j, t, live, d) {
   }
 }
 
-function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, flags, calls, sortname, wide) {
+function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, flags, calls, sortname, wide, oneschema, cores) {
   W = cols - 3
   NO = 0
   emit(header(W))
@@ -938,12 +938,17 @@ function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, f
   if (sel > NSEL) sel = NSEL
   if (sel < 1) sel = (NSEL > 0) ? 1 : 0
   wide = (W >= 110)
+  # When every statement is in the same schema, say so once instead of a column
+  oneschema = (NTA > 0) ? tschema[TA[1]] : ""
+  for (j = 2; j <= NTA; j++) if (tschema[TA[j]] != oneschema) { oneschema = ""; break }
+  cores = (TOP_LIVE && elapsed > 0) ? sprintf(" = %.2f cores", TTOTAL / 1e12 / elapsed) : ""
   sortname = (tsort == "calls") ? "calls" : (tsort == "avg") ? "average latency" : (tsort == "max") ? "max latency" : "total time"
-  emit(ptitle(clip(sprintf("TOP QUERIES  by %s   %s   %d statements, %s of query time%s", sortname,
+  emit(ptitle(clip(sprintf("TOP QUERIES  by %s   %s   %d statements, %s of query time%s%s%s", sortname,
                            TOP_LIVE ? "last " interval "s" : "since boot (first sample; live figures next refresh)",
-                           NTA, fmtPs(TTOTAL), (top_err != "") ? "   " top_err : ""), W - 4), W))
-  emit(paint(BOLD, clip("   " padL(TOP_LIVE ? "CALLS/s" : "CALLS", 8) padL("AVG", 8) padL("MAX", 8) padL("TIME%", 6) padL("EXAM/SENT", 10) \
-                        "  " (wide ? padR("FLAGS", 11) padR("SCHEMA", 11) : "") "QUERY", W)))
+                           NTA, fmtPs(TTOTAL), cores, (oneschema != "") ? "   schema: " oneschema : "",
+                           (top_err != "") ? "   " top_err : ""), W - 4), W))
+  emit(paint(BOLD, clip("   " padL(TOP_LIVE ? "CALLS/s" : "CALLS", 8) padL("AVG", 8) padL("MAX/boot", 9) padL("TIME%", 6) padL("EXAM/SENT", 10) \
+                        "  " (wide ? padR("FLAGS", 11) ((oneschema == "") ? padR("SCHEMA", 11) : "") : "") "QUERY", W)))
   NC = 0
   for (j = 1; j <= NTA; j++) {
     i = TO[j]; k = TA[i]
@@ -952,13 +957,14 @@ function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, f
     flags = ((TT[i] > 0) ? "tmp " : "") ((TSO[i] > 0) ? "sort " : "") ((TN[i] > 0) ? "noidx" : "")
     lvl = high(avg, 0.1, 1)
     if (ratio != "" && ratio >= 1000) lvl = worse(lvl, 2)
-    if (TT[i] > 0 || TN[i] > 0) lvl = worse(lvl, 2)
+    # No index is only a concern when the statement actually reads a lot per call
+    if (TT[i] > 0 || (TN[i] > 0 && TR[i] / TC[i] >= 1000)) lvl = worse(lvl, 2)
     if (lvl < 1) lvl = 1
     calls = TOP_LIVE ? formatRate(TC[i] / elapsed) : formatNumber(TC[i])
-    line = padL(calls, 8) padL(fmtPs(TS[i] / TC[i]), 8) padL(fmtPs(tmax[k]), 8) \
+    line = padL(calls, 8) padL(fmtPs(TS[i] / TC[i]), 8) padL(fmtPs(tmax[k]), 9) \
            padL((TTOTAL > 0) ? sprintf("%.0f%%", 100 * TS[i] / TTOTAL) : "-", 6) \
            padL((ratio == "") ? "-" : (TRS[i] > 0) ? formatNumber(ratio) : formatNumber(ratio) "/0", 10) "  "
-    if (wide) line = line padR(flags, 11) padR(clip(tschema[k], 10), 11)
+    if (wide) line = line padR(flags, 11) ((oneschema == "") ? padR(clip(tschema[k], 10), 11) : "")
     line = line clip(ttext[k], W - 3 - vw(line))
     if (j == sel) CONT[++NC] = paint(INV, " " G_PTR " " padR(line, W - 3))
     else CONT[++NC] = " " mark(lvl) " " line
