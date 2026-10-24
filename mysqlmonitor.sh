@@ -448,19 +448,15 @@ function header(w,    left, right, parts, n, i, st) {
 
 function key(k, label) { return " " paint(INV, " " k " ") " " label " " }
 
-# mode: "fit" (more = 1 when the fitted layout left something out), "scroll" or "rawscroll".
-# pos describes the visible lines while scrolling. Shortens itself to fit w columns.
-function keybar(mode, more, pos, w,    k, lvl, scrolling) {
+# mode: "fit" (more = 1 when the fitted layout hides something), "details" or "raw".
+# pos is the visible range while the content scrolls. Shortens itself to fit w columns.
+function keybar(mode, more, pos, w,    k, lvl) {
   if (mode == "fit") MORE = more
-  scrolling = (mode == "scroll" || mode == "rawscroll")
   for (lvl = 1; lvl <= 3; lvl++) {
     k = key("q", (lvl < 3) ? "Quit" : "") key("r", (lvl < 3) ? ((view == "raw") ? "Dashboard" : "Raw counters") : "")
-    if (mode == "fit" && more) k = k key(G_DOWN, "More")
-    if (scrolling) {
-      k = k key(G_UP G_DOWN, (lvl == 1) ? "PgUp PgDn Scroll" : "Scroll")
-      if (mode == "scroll") k = k key("Esc", "Back")
-      k = k " " pos
-    }
+    if (mode == "fit" && more) k = k key("d", "Details")
+    if (mode == "details") k = k key("d", (lvl < 3) ? "Less" : "")
+    if (pos != "") k = k key(G_UP G_DOWN, (lvl == 1) ? "PgUp PgDn Scroll" : "Scroll") " " pos
     if (vw(k) <= w) break
   }
   return k
@@ -591,14 +587,9 @@ function arrange(n, sep,    total, k, x, i, c, h, used, ok, mx, best) {
   }
 }
 
-# Panels packed into n columns of width colw, then live queries if qrows > 0.
-function layoutGrid(n, colw, budget, qrows,    w, sep, i, j, c, H, line, seg) {
-  NO = 0
-  PW = colw; setWidths(colw, 0); buildPanels()
-  w = n * colw + 2 * (n - 1)
+# Emits the panels packed into n columns of width colw.
+function gridBody(n, colw,    sep, i, j, c, H, line, seg) {
   sep = (n > 1)
-  emit(header(w))
-  if (sep) emit("")
   arrange(n, sep)
   for (c = 1; c <= n; c++) CH[c] = 0
   for (i = 1; i <= NP; i++) {
@@ -615,6 +606,17 @@ function layoutGrid(n, colw, budget, qrows,    w, sep, i, j, c, H, line, seg) {
     }
     emit(line)
   }
+}
+
+# Panels packed into n columns of width colw, then live queries if qrows > 0.
+function layoutGrid(n, colw, budget, qrows,    w, sep) {
+  NO = 0
+  PW = colw; setWidths(colw, 0); buildPanels()
+  w = n * colw + 2 * (n - 1)
+  sep = (n > 1)
+  emit(header(w))
+  if (sep) emit("")
+  gridBody(n, colw)
   if (sep) emit("")
   if (qrows > 0) { emitQueries(w, qrows); if (sep) emit("") }
   emit(ptitle("ALERTS", w)); emitAlerts(budget, w)
@@ -645,43 +647,56 @@ function layoutCompact(budget, qrows,    colw, sep) {
   emit(keybar("fit", 1, "", 2 * colw + 3))
 }
 
-# Emits lines CONT[off+1 .. off+vh] padded to width w, with a scroll bar after them.
-# off is clamped to the valid range and returned.
-function viewport(off, vh, w,    maxoff, thumb, tpos, k, ind) {
-  maxoff = NC - vh; if (maxoff < 0) maxoff = 0
-  if (off > maxoff) off = maxoff
+# Emits CONT[1..NC] when it fits in vh lines; otherwise the vh lines from off, each
+# padded to w columns and followed by a scroll bar. Sets MAXOFF and returns the clamped off.
+function viewport(off, vh, w,    thumb, tpos, k, ind) {
+  MAXOFF = NC - vh; if (MAXOFF < 0) MAXOFF = 0
+  if (MAXOFF == 0) { for (k = 1; k <= NC; k++) emit(CONT[k]); return 0 }
+  if (off > MAXOFF) off = MAXOFF
   if (off < 0) off = 0
-  thumb = (NC > vh) ? int(vh * vh / NC) : vh; if (thumb < 1) thumb = 1
-  tpos = (maxoff > 0) ? int(off / maxoff * (vh - thumb) + 0.5) : 0
+  thumb = int(vh * vh / NC); if (thumb < 1) thumb = 1
+  tpos = int(off / MAXOFF * (vh - thumb) + 0.5)
   for (k = 1; k <= vh; k++) {
     ind = (k > tpos && k <= tpos + thumb) ? paint(CYN, G_FULL) : paint(DIM, G_V)
-    emit(padR((off + k <= NC) ? CONT[off + k] : "", w) " " ind)
+    emit(padR(CONT[off + k], w) " " ind)
   }
   return off
 }
 
 function posText(off, vh) { return (off + 1) "-" ((off + vh < NC) ? off + vh : NC) " of " NC }
 
-# Everything in one column (detail lines, and descriptions when wide enough), scrolled
-# to line off. The header, alerts and key bar stay in place.
-function layoutScroll(off,    colw, i, j, vh, nb, budget) {
-  SHOW_DETAIL = 1; SHOW_DESC = (cols - 3 >= DESC_MIN)
-  colw = cols - 3; if (colw > (SHOW_DESC ? 120 : 80)) colw = SHOW_DESC ? 120 : 80
+# Details view: every detail line and (when wide enough) description, in as many
+# columns as fit. Header, alerts and key bar stay in place; the panels scroll
+# when they don't fit, with the scroll bar at the right edge of the terminal.
+function layoutDetails(off,    W, n, colw, w, i, vh, fixed, budget, sep) {
+  W = cols - 3
+  SHOW_DETAIL = 1; SHOW_DESC = (W >= DESC_MIN)
+  if (SHOW_DESC) {
+    n = int((W + 2) / (DESC_MIN + 2)); if (n > 3) n = 3
+    colw = int((W - 2 * (n - 1)) / n); if (colw > 120) colw = 120
+  } else {
+    n = 1; colw = (W > 80) ? 80 : W
+  }
+  sep = (n > 1)
+  w = n * colw + 2 * (n - 1)
   PW = colw; setWidths(colw, 0); buildPanels()
   NO = 0
-  for (i = 1; i <= NP; i++) for (j = 1; j <= PN[ORDER[i]]; j++) emit(P[ORDER[i], j])
-  if (up) emitQueries(colw, (NQ > 0) ? NQ : 1)
+  gridBody(n, colw)
+  if (up) { if (sep) emit(""); emitQueries(w, (NQ > 0) ? NQ : 1) }
   NC = NO; for (i = 1; i <= NO; i++) CONT[i] = OUT[i]
 
   budget = (NAL > 4) ? 4 : (NAL > 1) ? NAL : 1
-  nb = 1 + budget + 1 + 1                  # alerts title, alerts, key bar, header
-  vh = rows - nb; if (vh < 1) vh = 1
+  fixed = 1 + sep + sep + 1 + budget + sep + 1      # header, gaps, alerts title + lines, key bar
+  vh = rows - fixed; if (vh < 1) vh = 1
   NO = 0
-  emit(header(colw + 2))
-  off = viewport(off, vh, colw)
-  emit(ptitle("ALERTS", colw + 2)); emitAlerts(budget, colw + 2)
-  emit(keybar("scroll", 0, posText(off, vh), colw + 2))
-  CHOSEN = "scroll" ((SHOW_DESC) ? " +desc" : "")
+  emit(header(W))
+  if (sep) emit("")
+  off = viewport(off, vh, W)
+  if (sep) emit("")
+  emit(ptitle("ALERTS", W)); emitAlerts(budget, W)
+  if (sep) emit("")
+  emit(keybar("details", 0, (MAXOFF > 0) ? posText(off, vh) : "", W))
+  CHOSEN = "details " n " col" ((SHOW_DESC) ? " +desc" : "")
   return off
 }
 
@@ -982,22 +997,22 @@ END {
 
   # ---------- Output ----------
   NO = 0
-  SCROLL_OUT = scroll
+  SCROLL_OUT = 0; MAXOFF = 0; MORE = 0
   if (view == "raw") {
+    # The classic table scrolls when it is taller than the screen (key bar on the last line)
     renderRaw()
-    if (NO > rows) {
-      # Too tall: scroll it, with the key bar on the last line
-      NC = NO; for (i = 1; i <= NO; i++) CONT[i] = OUT[i]
-      NO = 0
-      SCROLL_OUT = viewport((scroll > 0) ? scroll : 0, rows - 1, vw(CONT[1]))
-      emit(keybar("rawscroll", 0, posText(SCROLL_OUT, rows - 1), cols - 1))
-    } else SCROLL_OUT = 0
+    NC = NO; for (i = 1; i <= NO; i++) CONT[i] = OUT[i]
+    NO = 0
+    SCROLL_OUT = viewport(scroll, rows - 1, cols - 3)
+    emit(keybar("raw", 0, (MAXOFF > 0) ? posText(SCROLL_OUT, rows - 1) : "", cols - 1))
+    CHOSEN = "raw"
   }
-  else if (scroll >= 0) SCROLL_OUT = layoutScroll(scroll)
+  else if (details) SCROLL_OUT = layoutDetails(scroll)
   else layoutBest()
   for (i = 1; i <= NO; i++) print OUT[i]
-  # Scroll position after clamping, and whether the fitted view hides anything
-  print "@@SCROLL " SCROLL_OUT " " (MORE + 0)
+  # Scroll position after clamping, the furthest it can scroll, and whether the
+  # fitted dashboard hides anything (so 'd' is offered)
+  print "@@SCROLL " SCROLL_OUT " " MAXOFF " " (MORE + 0)
   # Layout report for the size test harness (-v debug=1)
   if (debug) printf "LAYOUT %s|%d|%d\n", CHOSEN, NO, QROWS > "/dev/stderr"
 
@@ -1031,7 +1046,7 @@ fetch() {
 render() {
   local out
   out=$(LC_ALL=C awk -v title="$TITLE" -v rows="$rows" -v cols="$cols" -v view="$VIEW" \
-          -v interval="$INTERVAL" -v clock="$clock" -v unicode="$UNICODE" -v color="$COLOR" -v scroll="$SCROLL" \
+          -v interval="$INTERVAL" -v clock="$clock" -v unicode="$UNICODE" -v color="$COLOR" -v details="$DETAILS" -v scroll="$SCROLL" \
           "$RENDER_AWK" <<< "@@TIME $sample_time"$'\n'"@@PREV"$'\n'"$prev_state"$'\n'"@@CUR"$'\n'"$sample" 2>&1)
   if [[ $out != *$'\n'@@STATE* ]]; then
     # awk failed: show its error instead of a blank screen, and keep the previous state
@@ -1041,9 +1056,7 @@ render() {
   fi
   frame=${out%%$'\n'@@SCROLL *}
   local meta=${out#*$'\n'@@SCROLL }
-  meta=${meta%%$'\n'*}
-  SCROLL=${meta% *}
-  MORE=${meta#* }
+  read -r SCROLL MAXOFF MORE <<< "${meta%%$'\n'*}"
   next_state=${out#*@@STATE$'\n'}
 }
 
@@ -1094,38 +1107,24 @@ read_key() {
 }
 
 # Applies KEY to the view. Returns 1 when it changes nothing.
-# SCROLL is -1 for the fitted dashboard, otherwise the first visible line; scroll keys
-# enter the full view (only when the fitted view hides something) and awk clamps the offset.
+# 'd' toggles the details view (offered when the fitted dashboard hides something).
+# Scroll keys move SCROLL within 0..MAXOFF, which awk reports for the current view.
 apply_key() {
   local page=$(( rows > 12 ? rows - 8 : 4 ))
   case $KEY in
     q|Q) exit 0 ;;
-    r|R) if [[ $VIEW == raw ]]; then VIEW=dashboard; SCROLL=-1; else VIEW=raw; SCROLL=0; fi ;;
-    down|j|pgdn|end)
-      if (( SCROLL < 0 )); then
-        (( MORE )) || return 1
-        SCROLL=0
-      fi
-      case $KEY in
-        down|j) (( SCROLL += 1 )) ;;
-        pgdn) (( SCROLL += page )) ;;
-        end) SCROLL=999999 ;;
-      esac
-      ;;
-    up|k|pgup)
-      (( SCROLL < 0 )) && return 1
-      # Going up from the top of the full view returns to the fitted dashboard
-      if (( SCROLL == 0 )); then
-        [[ $VIEW == dashboard ]] || return 1
-        SCROLL=-1
-      elif [[ $KEY == pgup ]]; then
-        (( SCROLL = SCROLL > page ? SCROLL - page : 0 ))
-      else
-        (( SCROLL -= 1 ))
-      fi
-      ;;
-    home) (( SCROLL > 0 )) || return 1; SCROLL=0 ;;
-    esc) [[ $VIEW == dashboard ]] && (( SCROLL >= 0 )) || return 1; SCROLL=-1 ;;
+    r|R) if [[ $VIEW == raw ]]; then VIEW=dashboard; else VIEW=raw; fi; SCROLL=0 ;;
+    d|D)
+      [[ $VIEW == dashboard ]] || return 1
+      if (( DETAILS )); then DETAILS=0; elif (( MORE )); then DETAILS=1; else return 1; fi
+      SCROLL=0 ;;
+    esc) [[ $VIEW == dashboard ]] && (( DETAILS )) || return 1; DETAILS=0; SCROLL=0 ;;
+    down|j) (( SCROLL < MAXOFF )) || return 1; (( SCROLL += 1 )) ;;
+    pgdn)   (( SCROLL < MAXOFF )) || return 1; (( SCROLL += page )) ;;
+    end)    (( SCROLL < MAXOFF )) || return 1; SCROLL=$MAXOFF ;;
+    up|k)   (( SCROLL > 0 )) || return 1; (( SCROLL -= 1 )) ;;
+    pgup)   (( SCROLL > 0 )) || return 1; (( SCROLL = SCROLL > page ? SCROLL - page : 0 )) ;;
+    home)   (( SCROLL > 0 )) || return 1; SCROLL=0 ;;
     *) return 1 ;;
   esac
   return 0
@@ -1154,7 +1153,9 @@ printf '\033[?25l\033[?7l\033[H\033[J'
 state=""
 resized=0
 VIEW=dashboard
-SCROLL=-1
+DETAILS=0
+SCROLL=0
+MAXOFF=0
 MORE=0
 read_size
 
