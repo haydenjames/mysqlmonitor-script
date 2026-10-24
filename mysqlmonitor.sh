@@ -562,7 +562,8 @@ function renderHealth(    W, lvl, x, n, eff) {
   emit(paint(BOLD, " " padR("", HN + 2) padL("now " interval "s", 10) (HB ? padL("since boot", 12) : "") "   target"))
 
   emit(paint(BOLD CYN, " InnoDB"))
-  hrow(low(hit_now, 99, 95), "Buffer pool hit ratio", pct2(hit_now), pct2(hit_boot), "> 99%",
+  x = (hit_now != "") ? hit_now : hit_boot
+  hrow(low(x, 99, 95), "Buffer pool hit ratio", pct2(hit_now), pct2(hit_boot), "> 99%",
        sprintf("innodb_buffer_pool_size = %s. %s RAM available; try %s.", formatBytes(bp_size), formatBytes(mem_avail), formatBytes(bp_size + mem_avail / 2)))
   hrow(high(r_wait, 0.001, 1), "Waits for free pool pages/s", formatRate(r_wait), bootRate("Innodb_buffer_pool_wait_free"), "0",
        sprintf("The pool is too small for the working set: raise innodb_buffer_pool_size (now %s).", formatBytes(bp_size)))
@@ -570,6 +571,13 @@ function renderHealth(    W, lvl, x, n, eff) {
        "The pool is fully used. Fine while the hit ratio stays high; otherwise raise innodb_buffer_pool_size.")
   hrow(high(r_logw, 0.001, 1), "InnoDB log waits/s", formatRate(r_logw), bootRate("Innodb_log_waits"), "0",
        sprintf("innodb_log_buffer_size = %s. Try %s.", formatBytes(vars["innodb_log_buffer_size"]), formatBytes(vars["innodb_log_buffer_size"] * 2)))
+  x = (redo_h_now != "") ? redo_h_now : redo_h_boot
+  hrow(low(x, 1, 0.25), "Redo log covers (hours)", (redo_h_now != "") ? sprintf("%.1fh", redo_h_now) : "-",
+       (redo_h_boot != "") ? sprintf("%.1fh", redo_h_boot) : "-", "> 1h",
+       sprintf("Redo log is %s in total; at this write rate it cycles in %.0f minutes, forcing constant checkpoints. Raise innodb_log_file_size%s.",
+               formatBytes(redo_total), x * 60, (vars["innodb_redo_log_capacity"] > 0) ? " (innodb_redo_log_capacity)" : ""))
+  hrow(high(r_rlw, 1, 10), "Row lock waits/s", formatRate(r_rlw), bootRate("Innodb_row_lock_waits"), "~0",
+       sprintf("Transactions are contending (avg wait %.0f ms). Shorten transactions and index the columns in UPDATE/DELETE WHERE clauses.", rlw_ms))
 
   emit(paint(BOLD CYN, " Connections"))
   hrow(high(peak_pct, 85, 95), "Peak connection usage", pct(conn_pct), pct(peak_pct), "< 85%",
@@ -578,6 +586,12 @@ function renderHealth(    W, lvl, x, n, eff) {
   n = vars["thread_cache_size"]
   hrow(low(x, 90, 50), "Thread cache hit ratio", pct(tc_now), pct(tc_boot), "> 90%",
        sprintf("thread_cache_size = %d (%s threads created). Try %d.", n, formatNumber(cur["Threads_created"]), (n * 2 > 16) ? n * 2 : 16))
+  hrow((cur["Connection_errors_max_connections"] > 0 && r_refused == "") ? 2 : high(r_refused, 0.001, 0.001), "Refused (max_connections)/s",
+       formatRate(r_refused), bootRate("Connection_errors_max_connections"), "0",
+       sprintf("max_connections = %d was reached and clients were turned away (%s since boot). Raise it, or fix connection leaks and pooling.",
+               maxc, formatNumber(cur["Connection_errors_max_connections"])))
+  hrow((ncpu > 0) ? high(cur["Threads_running"], 2 * ncpu, 4 * ncpu) : 0, "Running threads", cur["Threads_running"] "", "-",
+       (ncpu > 0) ? "< " 2 * ncpu : "-", "More runnable threads than cores: queries are queuing for CPU. Look at the process list (p) and the slow log.")
   hrow(high(r_abort, 1, 10), "Aborted connections/s", formatRate(r_abort), bootRate("Aborted_connects"), "~0",
        "Failed logins, timeouts or dropped clients: check wait_timeout, max_allowed_packet and the network.")
 
@@ -600,6 +614,11 @@ function renderHealth(    W, lvl, x, n, eff) {
   hrow((x == "") ? 0 : (x == "ON" || x == "1") ? 1 : 2, "Slow query log", (x == "") ? "-" : x, "-", "ON",
        sprintf("SET GLOBAL slow_query_log = 1; long_query_time = %s%s", vars["long_query_time"] + 0,
                (vars["long_query_time"] >= 10) ? " is high: try 1-2s." : "."))
+  x = toupper(svars["query_cache_type"])
+  n = (x != "" && x != "OFF" && x != "0" && vars["query_cache_size"] > 0)
+  hrow((x == "") ? 0 : (n ? 2 : 1), "Query cache", (x == "") ? "-" : (n ? "ON" : "OFF"), "-", "OFF",
+       sprintf("The query cache serialises queries on multi-core servers (query_cache_size = %s). Set query_cache_type = 0 and query_cache_size = 0.",
+               formatBytes(vars["query_cache_size"])))
   hrow(high(r_fj, 1, 10), "Joins without indexes/s", formatRate(r_fj), bootRate("Select_full_join"), "~0",
        "Add indexes on the joined columns (Select_full_join).")
   x = (tmp_now != "") ? tmp_now : tmp_boot
@@ -815,6 +834,7 @@ function buildPanels(    p) {
     pd(R(0, "Cache hits/s", "Table_open_cache_hits", "", "Cache hits for table open."))
     pd(R(0, "Cache miss/s", "Table_open_cache_misses", "", "Cache misses for table open."))
     pd(R(0, "Locks imm/s", "Table_locks_immediate", "", "Locks acquired immediately."))
+    pd(R(high(r_rlw, 1, 10), "Row lock wt/s", "Innodb_row_lock_waits", "", "InnoDB row lock waits (contention)."))
     pd(R(0, "Key reads/s", "Key_reads", "", "MyISAM disk reads (Use InnoDB)."))
     pd(R(0, "Key writes/s", "Key_writes", "", "MyISAM disk writes (Use InnoDB)."))
   }
@@ -1084,7 +1104,8 @@ BEGIN {
              "Opened_tables Questions Select_full_join Select_scan Slow_queries " \
              "Sort_merge_passes Sort_range Sort_rows Sort_scan Table_locks_immediate " \
              "Table_locks_waited Table_open_cache_hits Table_open_cache_misses " \
-             "Threads_cached Threads_connected Threads_created Threads_running Uptime", metrics, " ")
+             "Threads_cached Threads_connected Threads_created Threads_running Uptime " \
+             "Connection_errors_max_connections Innodb_os_log_written Innodb_row_lock_time Innodb_row_lock_waits", metrics, " ")
   for (i = 1; i <= nm; i++) wanted[metrics[i]] = 1
   wanted["Innodb_buffer_pool_pages_total"] = 1
 
@@ -1094,7 +1115,8 @@ BEGIN {
 
   split("innodb_buffer_pool_size innodb_page_size max_connections table_open_cache hostname version " \
         "thread_cache_size tmp_table_size max_heap_table_size slow_query_log long_query_time " \
-        "innodb_log_buffer_size open_files_limit sort_buffer_size key_buffer_size", v, " ")
+        "innodb_log_buffer_size open_files_limit sort_buffer_size key_buffer_size " \
+        "innodb_log_file_size innodb_log_files_in_group innodb_redo_log_capacity query_cache_type query_cache_size", v, " ")
   for (i in v) wanted_var[v[i]] = 1
 
   desc["Aborted_clients"]                  = "Failed client connections."
@@ -1135,6 +1157,10 @@ BEGIN {
   desc["Threads_created"]                  = "Threads created for connections."
   desc["Threads_running"]                  = "Threads currently running queries."
   desc["Uptime"]                           = ""
+  desc["Connection_errors_max_connections"]= "Clients refused: max_connections hit."
+  desc["Innodb_os_log_written"]            = "Bytes written to the redo log."
+  desc["Innodb_row_lock_time"]             = "Time spent waiting for row locks (ms)."
+  desc["Innodb_row_lock_waits"]            = "Row lock waits (contention)."
 
   section = ""; tables = 0; err = ""
 }
@@ -1203,6 +1229,16 @@ END {
   slow_boot = (cur["Questions"] > 0) ? 100 * cur["Slow_queries"] / cur["Questions"] : ""
   slow_now = (have_prev && delta("Questions") > 0) ? 100 * delta("Slow_queries") / delta("Questions") : ""
   slow_pct = (slow_now != "") ? slow_now : slow_boot
+  r_refused = rate("Connection_errors_max_connections")
+  r_rlw = rate("Innodb_row_lock_waits")
+  rlw_ms = (have_prev && delta("Innodb_row_lock_waits") > 0) ? delta("Innodb_row_lock_time") / delta("Innodb_row_lock_waits") : \
+           (cur["Innodb_row_lock_waits"] > 0) ? cur["Innodb_row_lock_time"] / cur["Innodb_row_lock_waits"] : ""
+  # Redo log: hours of writes it holds at the current (and since-boot) write rate
+  redo_total = (vars["innodb_redo_log_capacity"] > 0) ? vars["innodb_redo_log_capacity"] : \
+               vars["innodb_log_file_size"] * ((vars["innodb_log_files_in_group"] > 0) ? vars["innodb_log_files_in_group"] : 1)
+  r_redo = rate("Innodb_os_log_written")
+  redo_h_now = (redo_total > 0 && r_redo > 0) ? redo_total / (r_redo * 3600) : ""
+  redo_h_boot = (redo_total > 0 && cur["Uptime"] > 0 && cur["Innodb_os_log_written"] > 0) ? redo_total / (cur["Innodb_os_log_written"] / cur["Uptime"] * 3600) : ""
   r_fj = rate("Select_full_join"); r_conn = rate("Connections")
   r_abort = (rate("Aborted_clients") != "" && rate("Aborted_connects") != "") ? rate("Aborted_clients") + rate("Aborted_connects") : ""
   r_bpr = rate("Innodb_buffer_pool_reads"); r_wait = rate("Innodb_buffer_pool_wait_free")
@@ -1296,6 +1332,10 @@ END {
       addAlert(2, sprintf("%s joins/s without usable indexes (Select_full_join).", formatRate(r_fj)))
     if (r_lockw > 0)
       addAlert(2, sprintf("Table lock waits %s/s. MyISAM tables? Consider converting them to InnoDB.", formatRate(r_lockw)))
+    if (r_refused > 0)
+      addAlert(3, sprintf("Clients are being refused: max_connections (%d) was reached.", maxc))
+    if (r_rlw >= 1)
+      addAlert(high(r_rlw, 1, 10), sprintf("InnoDB row lock waits %s/s (avg %.0f ms): transactions are contending.", formatRate(r_rlw), rlw_ms))
     if (r_smp >= 1)
       addAlert(2, sprintf("Sort merge passes %s/s. Large sorts are spilling to disk.", formatRate(r_smp)))
     if (r_abort >= 1)
