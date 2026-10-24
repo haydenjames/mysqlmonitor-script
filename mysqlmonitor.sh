@@ -6,7 +6,7 @@
 # Blog: https://linuxblog.io
 # ---------------------
 
-TITLE="MySQL Monitor v2026.10.24.01"
+TITLE="MySQL Monitor v2026.10.24.02"
 
 # Define minimum terminal width. The required height is measured from the frame itself.
 MIN_COLS=50
