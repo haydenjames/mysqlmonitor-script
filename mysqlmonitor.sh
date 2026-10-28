@@ -627,7 +627,19 @@ function hrow(lvl, name, now, boot, target, advice,    line, v) {
   if (HB) line = line padL(boot, 12)
   line = line "   " target
   emit(line)
-  if (lvl >= 2 && advice != "") emit(paint(ITAL, "      " clip(G_ARROW " " advice, HW - 6)))
+  # Advice wraps onto further lines rather than being cut off: it often ends in the command to run
+  if (lvl >= 2 && advice != "") hadvice(advice)
+}
+
+function hadvice(text,    n, words, i, line, first, w) {
+  n = split(text, words, " "); line = ""; first = 1; w = HW - 8
+  for (i = 1; i <= n; i++) {
+    if (line != "" && length(line) + 1 + length(words[i]) > w) {
+      emit(paint(ITAL, (first ? "      " G_ARROW " " : "        ") line)); line = ""; first = 0
+    }
+    line = (line == "") ? words[i] : line " " words[i]
+  }
+  if (line != "") emit(paint(ITAL, (first ? "      " G_ARROW " " : "        ") line))
 }
 
 function bootRate(name) { return (cur["Uptime"] > 0) ? formatRate(cur[name] / cur["Uptime"]) : "-" }
@@ -697,6 +709,9 @@ function renderHealth(    W, lvl, x, n, eff) {
   hrow((x == "") ? 0 : (n ? 2 : 1), "Query cache", (x == "") ? "-" : (n ? "ON" : "OFF"), "-", "OFF",
        sprintf("The query cache serialises queries on multi-core servers (query_cache_size = %s). Set query_cache_type = 0 and query_cache_size = 0.",
                formatBytes(vars["query_cache_size"])))
+  x = digestState()
+  hrow((x == "ok") ? 1 : (x == "off" || x == "notcollecting") ? 2 : 0, "Statement digests (t view)",
+       (x == "ok") ? "ON" : (x == "off") ? "OFF" : (x == "notcollecting") ? "empty" : "-", "-", "ON", digestFix(x))
   hrow(high(r_fj, 1, 10), "Joins without indexes/s", formatRate(r_fj), bootRate("Select_full_join"), "~0",
        "Add indexes on the joined columns (Select_full_join).")
   x = (tmp_now != "") ? tmp_now : tmp_boot
@@ -904,6 +919,38 @@ function renderProcs(sel, off,    W, wide, hwide, i, k, lvl, t, h, line, vh, hdr
 
 # ---------- Top queries view (performance_schema digests) ----------
 
+# Whether statement digests are actually being collected. An empty digest table must
+# never read as "no slow queries": either performance_schema is off (MariaDB's default,
+# needs my.cnf and a restart), or it is on but statement instrumentation or the
+# statements_digest consumer is disabled (fixable at runtime). Sets DIGEST_STATE to
+# "ok", "noclient", "off", "notcollecting" or "empty" (server just started).
+function digestState(    ps) {
+  ps = toupper(svars["performance_schema"])
+  if (!topq) return "noclient"
+  if (NT > 0) return "ok"
+  if (ps == "OFF" || ps == "0") return "off"
+  # The monitor's own statements are filtered out, so a running server with real
+  # traffic and an empty table is not collecting
+  if (cur["Questions"] > 1000) return "notcollecting"
+  return "empty"
+}
+
+# Emits text word-wrapped to w columns, each line starting with indent.
+function emitWrapped(text, w, indent,    n, words, i, line) {
+  n = split(text, words, " "); line = ""
+  for (i = 1; i <= n; i++) {
+    if (line != "" && length(line) + 1 + length(words[i]) > w) { emit(indent line); line = "" }
+    line = (line == "") ? words[i] : line " " words[i]
+  }
+  if (line != "") emit(indent line)
+}
+
+function digestFix(st) {
+  if (st == "off") return "performance_schema is OFF (MariaDB's default) and can't be enabled at runtime: add performance_schema = ON under [mysqld] in my.cnf and restart."
+  if (st == "notcollecting") return "performance_schema is ON but no statement digests are recorded. Enable them: UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('global_instrumentation', 'thread_instrumentation', 'statements_digest'); UPDATE performance_schema.setup_instruments SET ENABLED = 'YES' WHERE NAME LIKE 'statement/%';"
+  return top_err
+}
+
 function fmtPs(ps,    sec) {
   sec = ps / 1e12
   if (sec >= 1)     return sprintf("%.2fs", sec)
@@ -949,17 +996,23 @@ function selectTop(    k, i, j, t, live, d) {
   }
 }
 
-function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, flags, calls, sortname, wide, oneschema, cores) {
+function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, flags, calls, sortname, wide, oneschema, cores, dst) {
   W = cols - 3
   NO = 0
   emit(header(W))
-  if (!topq || (NT == 0 && toupper(svars["performance_schema"]) == "OFF")) {
+  dst = digestState()
+  if (dst == "noclient" || dst == "off" || dst == "notcollecting") {
     emit(ptitle("TOP QUERIES", W))
-    emit(" " mark(2) " " clip("Not available: " ((topq) ? "performance_schema is OFF on this server, so no statements are recorded." : top_err), W - 3))
+    emit(" " mark(2) " " clip((dst == "noclient") ? "Not available: " top_err : \
+                         (dst == "off") ? "Not available: performance_schema is OFF, so no statements are recorded." : \
+                         "Statement digests are not being collected, so this list would be empty.", W - 3))
+    emit("   " paint(ITAL, clip("An empty list here would not mean there are no slow queries.", W - 3)))
     emit("")
-    emit("   This view reads performance_schema.events_statements_summary_by_digest with the mysql client.")
-    emit("   MySQL 5.7/8.0 have performance_schema on by default; MariaDB needs performance_schema = ON in")
-    emit("   my.cnf and a restart. The MySQL user needs SELECT on performance_schema.")
+    emitWrapped(digestFix(dst), W - 6, "   ")
+    emit("")
+    emit("   This view reads performance_schema.events_statements_summary_by_digest with the mysql client,")
+    emit("   and the MySQL user needs SELECT on performance_schema. MySQL has performance_schema on by")
+    emit("   default since 5.6; MariaDB ships with it off.")
     emit(keybar("view", 0, "", W))
     NSEL = 0; PSEL_OUT = 0; SELID = "-"; SELDESC = "-"
     return 0
@@ -1000,7 +1053,8 @@ function renderTop(sel, off,    W, i, j, k, lvl, line, vh, detail, avg, ratio, f
     if (j == sel) CONT[++NC] = paint(INV, " " G_PTR " " padR(line, W - 3))
     else CONT[++NC] = " " mark(lvl) " " line
   }
-  if (NTA == 0) CONT[++NC] = " " mark(1) " " paint(GRN, TOP_LIVE ? "No statements ran in the last " interval "s" : "No statements recorded")
+  if (NTA == 0) CONT[++NC] = (dst == "empty") ? "   No statements recorded yet (the server has only just started)." : \
+                             " " mark(1) " " paint(GRN, TOP_LIVE ? "No statements ran in the last " interval "s" : "No statements recorded")
   detail = (sel > 0) ? " " G_PTR " " ttext[TA[TO[sel]]] : ""
   vh = rows - 4 - ((detail != "") ? 2 : 0); if (vh < 1) vh = 1
   if (sel > 0) { if (sel - 1 < off) off = sel - 1; if (sel > off + vh) off = sel - vh }
